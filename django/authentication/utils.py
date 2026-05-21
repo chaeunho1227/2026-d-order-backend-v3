@@ -6,24 +6,20 @@ import http.cookies
 from django.conf import settings
 
 
-# 과거 도메인 설정(`.dorder-api.shop`, `dev.dorder-api.shop` 등) 시기에
-# 사용자 브라우저에 박힌 잔재 쿠키를 자동 정리하기 위한 도메인/이름 변형 목록.
-# delete_cookie는 Set-Cookie의 Domain attr이 정확히 일치해야 브라우저가 지우므로
-# 알려진 모든 변형을 시도해야 한다.
+# 과거 `Domain=.dorder-api.shop` 부모 도메인으로 발급되어 dev/prod 서브도메인
+# 모두로 누수되는 쿠키만 정리 대상. `dev.*`/`prod.*`/`admin.*`는 host-only라
+# 다른 환경으로 누수되지 않아 정리할 필요가 없고, 변형을 추가할수록 응답 헤더가
+# 부풀어 nginx `proxy_buffer_size` 초과로 502를 유발한다 (#440 hotfix).
 _STALE_COOKIE_DOMAINS = (
     '.dorder-api.shop',
     'dorder-api.shop',
-    'dev.dorder-api.shop',
-    '.dev.dorder-api.shop',
-    'prod.dorder-api.shop',
-    '.prod.dorder-api.shop',
-    'admin.dorder-api.shop',
-    '.admin.dorder-api.shop',
 )
 _STALE_COOKIE_NAMES = ('csrftoken', 'sessionid', 'access_token', 'refresh_token')
 
-# 정리 1회 실행 식별자. 새 도메인을 추가해 재정리를 유도하고 싶으면 v2/v3로 bump한다.
-STALE_PURGE_MARKER = '_stale_purged_v1'
+# 정리 1회 실행 식별자. 정리 대상이 바뀌면 v3/v4로 bump하여 기존 클라이언트 재정리를 유도.
+# v1: 8 도메인 × 4 이름 = 32 헤더 → 응답 헤더 too big으로 502 유발
+# v2: 2 부모 도메인 × 4 이름 = 8 헤더 (현재)
+STALE_PURGE_MARKER = '_stale_purged_v2'
 
 
 def clear_stale_domain_cookies(response, request=None):
