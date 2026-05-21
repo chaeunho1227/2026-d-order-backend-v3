@@ -259,6 +259,8 @@ _file_handlers = {} if IS_LOCAL else {
 }
 _file_handler = [] if IS_LOCAL else ['file']
 _file_error_handler = [] if IS_LOCAL else ['file_error']
+_app_handlers = ['console'] + _file_handler + _file_error_handler
+_app_log_level = 'DEBUG' if not IS_PRODUCTION else 'INFO'
 
 LOGGING = {
     'version': 1,
@@ -299,33 +301,33 @@ LOGGING = {
             'propagate': False,  # django logger 중복 방지
         },
         'channels': {
-            'handlers': ['console'] + _file_handler,
+            'handlers': _app_handlers,
             'level': 'INFO',
             'propagate': False,
         },
         'authentication': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': _app_handlers,
+            'level': _app_log_level,
             'propagate': False,
         },
         'booth': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': _app_handlers,
+            'level': _app_log_level,
             'propagate': False,
         },
         'core': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': _app_handlers,
+            'level': _app_log_level,
             'propagate': False,
         },
         'order': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': _app_handlers,
+            'level': _app_log_level,
             'propagate': False,
         },
         'table': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': _app_handlers,
+            'level': _app_log_level,
             'propagate': False,
         },
     },
