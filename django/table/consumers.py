@@ -26,7 +26,7 @@ class BaseTableConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
             booth = await sync_to_async(lambda: user.booth)()
             return booth.pk
         except Exception as e:
-            logger.warning(f"User {user.username} has no booth: {e}")
+            logger.exception("User %s has no booth", user.username)
             await self.close(code=4003)
             return None
 
