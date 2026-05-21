@@ -79,7 +79,7 @@ class OrderBroadcastService:
 
             channel_layer = get_channel_layer()
             if not channel_layer:
-                logger.error("[OrderBroadcast] channel_layer 없음")
+                logger.error("[broadcast_order_update] channel_layer 없음 | table_usage_id=%s", table_usage_id)
                 return
 
             try:
@@ -159,7 +159,7 @@ class TableService:
         def send_ws():
             channel_layer = get_channel_layer()
             if channel_layer is None:
-                logger.error('[TableService] channel_layer 없어요')
+                logger.error("[TableService._broadcast] channel_layer 없음 | booth_pk=%s", booth_pk)
                 return
             async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.tables', event)
 
@@ -172,7 +172,7 @@ class TableService:
         def send_ws():
             channel_layer = get_channel_layer()
             if channel_layer is None:
-                logger.error('[TableService] channel_layer 없어요')
+                logger.error("[TableService._broadcast_detail] channel_layer 없음 | booth_pk=%s, table_num=%s", booth_pk, table_num)
                 return
             async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.tables.{table_num}', event)
 
@@ -184,7 +184,7 @@ class TableService:
         def send_ws():
             channel_layer = get_channel_layer()
             if channel_layer is None:
-                logger.error('[TableService] channel_layer 없어요')
+                logger.error("[TableService._broadcast_to_order_group] channel_layer 없음 | booth_pk=%s", booth_pk)
                 return
             async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.order', event)
 

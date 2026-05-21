@@ -50,9 +50,9 @@ class JWTCookieAuthentication(JWTAuthentication):
         try:
             validated_token = self.get_validated_token(raw_token)
             user = self.get_user(validated_token)
-            logger.debug(f"[JWTCookieAuth] Token validated for user: {user.username}")
+            logger.debug("[JWTCookieAuth] Token validated for user: %s", user.username)
         except Exception as e:
-            logger.warning(f"[JWTCookieAuth] Token validation failed: {e}")
+            logger.warning("[JWTCookieAuth] Token validation failed: %s", e)
             return None
 
         # 4. Unsafe 메서드는 CSRF 체크
@@ -81,7 +81,7 @@ class JWTCookieAuthentication(JWTAuthentication):
         reason = check.process_view(request, None, (), {})
 
         if reason:
-            logger.warning(f"[JWTCookieAuth] CSRF check failed: {reason}")
+            logger.warning("[JWTCookieAuth] CSRF check failed: %s", reason)
             raise PermissionDenied(f'CSRF verification failed: {reason}')
 
-        logger.debug(f"[JWTCookieAuth] CSRF check passed for {request.method} {request.path}")
+        logger.debug("[JWTCookieAuth] CSRF check passed for %s %s", request.method, request.path)

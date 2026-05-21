@@ -157,9 +157,8 @@ class BoothService:
             try:
                 from order.cache import invalidate_today_revenue
                 invalidate_today_revenue(booth.pk)
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"[부스 초기화] 매출 캐시 무효화 실패: {e}")
+            except Exception:
+                logger.exception("[부스 초기화] 매출 캐시 무효화 실패")
 
             try:
                 from channels.layers import get_channel_layer
@@ -170,9 +169,8 @@ class BoothService:
                     group_name,
                     {"type": "total_sales_update", "data": {"today_revenue": 0}}
                 )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"[부스 초기화] 총매출 WebSocket 전송 실패: {e}")
+            except Exception:
+                logger.exception("[부스 초기화] 총매출 WebSocket 전송 실패")
 
         transaction.on_commit(_send_ws_after_commit)
 
