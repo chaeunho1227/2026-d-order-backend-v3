@@ -48,11 +48,15 @@ def clear_stale_domain_cookies(response, request=None):
             morsel['path'] = '/'
             response.cookies[f'__stale__{name}__{domain}'] = morsel
 
+    # 마커는 dev/prod의 cross-site fetch에도 동행해야 skip이 작동한다.
+    # 같은 정책의 csrftoken/access_token이 dev에서 SameSite=None을 쓰는 이유와 동일.
+    # 마커가 cross-site 요청에 전송되지 않으면 매 응답마다 cleanup이 반복 실행되어
+    # 응답 헤더가 부풀고 stale 정리 의미도 없어진다.
     response.set_cookie(
         STALE_PURGE_MARKER,
         '1',
         max_age=60 * 60 * 24 * 365,
-        samesite='Lax',
+        samesite='None' if settings.IS_DEVELOPMENT else 'Lax',
         secure=not settings.IS_LOCAL,
         httponly=True,
     )
