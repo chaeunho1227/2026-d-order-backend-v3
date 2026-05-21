@@ -117,7 +117,17 @@ services:
     image: ${DOCKER_USERNAME:-local}/d-order-django:prod
     container_name: d-order-django-blue-prod
     profiles: ['blue']
-    command: daphne -b 0.0.0.0 -p 8000 project.asgi:application
+    command: >
+      gunicorn project.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --worker-connections 1000
+      --timeout 60
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
       DEBUG: 'False'
@@ -131,6 +141,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: 5432
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -176,7 +187,17 @@ services:
     image: ${DOCKER_USERNAME:-local}/d-order-django:prod
     container_name: d-order-django-green-prod
     profiles: ['green']
-    command: daphne -b 0.0.0.0 -p 8000 project.asgi:application
+    command: >
+      gunicorn project.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --worker-connections 1000
+      --timeout 60
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
       DEBUG: 'False'
@@ -190,6 +211,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: 5432
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
