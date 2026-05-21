@@ -1,3 +1,4 @@
+from django.db import OperationalError
 from rest_framework import viewsets, status, views
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated, AllowAny
@@ -140,9 +141,14 @@ class TableEnterAPIView(views.APIView):
         table_num = request.data.get('table_num')
 
         # ValidationError, NotFound 예외는 DRF가 자동으로 적절한 HTTP 응답으로 변환
-        table_usage = TableService.init_or_enter_table(booth, table_num)
+        # OperationalError 는 PG lock_timeout/statement_timeout 도달 시 발생 → 사용자에게 재시도 안내
+        try:
+            table_usage = TableService.init_or_enter_table(booth, table_num)
+        except OperationalError:
+            return Response({
+                'message': '입장 처리가 혼잡합니다. 잠시 후 다시 시도해주세요.'
+            }, status=status.HTTP_503_SERVICE_UNAVAILABLE)
 
-        
         # 성공 응답
         return Response({
             'message': '테이블 입장에 성공했습니다.',

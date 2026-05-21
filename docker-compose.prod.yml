@@ -58,6 +58,13 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: d-order-postgres-prod
+    # 다중 워커(Django Gunicorn workers + Spring HikariCP 10) 동시 접속 여유 확보
+    command:
+      - postgres
+      - -c
+      - max_connections=200
+      - -c
+      - shared_buffers=256MB
     # 필수 env가 비어 있으면 컨테이너를 띄우지 않음 (빈 비밀번호로 유저가 생성되는 사고 방지)
     environment:
       POSTGRES_DB: ${POSTGRES_DB:?POSTGRES_DB not set}
@@ -117,7 +124,17 @@ services:
     image: ${DOCKER_USERNAME:-local}/d-order-django:prod
     container_name: d-order-django-blue-prod
     profiles: ['blue']
-    command: daphne -b 0.0.0.0 -p 8000 project.asgi:application
+    command: >
+      gunicorn project.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --worker-connections 1000
+      --timeout 60
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
       DEBUG: 'False'
@@ -131,6 +148,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: 5432
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -176,7 +194,17 @@ services:
     image: ${DOCKER_USERNAME:-local}/d-order-django:prod
     container_name: d-order-django-green-prod
     profiles: ['green']
-    command: daphne -b 0.0.0.0 -p 8000 project.asgi:application
+    command: >
+      gunicorn project.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --worker-connections 1000
+      --timeout 60
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
       DEBUG: 'False'
@@ -190,6 +218,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: 5432
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
