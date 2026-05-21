@@ -259,6 +259,7 @@ _file_handlers = {} if IS_LOCAL else {
 }
 _file_handler = [] if IS_LOCAL else ['file']
 _file_error_handler = [] if IS_LOCAL else ['file_error']
+_order_log_level = 'DEBUG' if IS_LOCAL else 'INFO'
 
 LOGGING = {
     'version': 1,
@@ -320,7 +321,7 @@ LOGGING = {
         },
         'order': {
             'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'level': _order_log_level,
             'propagate': False,
         },
     },
