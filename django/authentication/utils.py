@@ -17,11 +17,16 @@ _STALE_COOKIE_DOMAINS = (
     '.dev.dorder-api.shop',
     'prod.dorder-api.shop',
     '.prod.dorder-api.shop',
+    'admin.dorder-api.shop',
+    '.admin.dorder-api.shop',
 )
 _STALE_COOKIE_NAMES = ('csrftoken', 'sessionid', 'access_token', 'refresh_token')
 
+# 정리 1회 실행 식별자. 새 도메인을 추가해 재정리를 유도하고 싶으면 v2/v3로 bump한다.
+STALE_PURGE_MARKER = '_stale_purged_v1'
 
-def clear_stale_domain_cookies(response):
+
+def clear_stale_domain_cookies(response, request=None):
     """옛 도메인 쿠키(부모도메인/서브도메인 변형)를 모두 expire 처리한다.
 
     Django response.cookies는 SimpleCookie(이름 기준 dict)라 같은 이름으로
@@ -30,7 +35,12 @@ def clear_stale_domain_cookies(response):
     새 쿠키에 잘못된 Domain attr이 붙는 문제가 있다.
     이를 회피하기 위해 각 변형을 고유한 dict 키로 Morsel 객체를 직접 넣는다.
     Morsel.key는 'csrftoken' 등 원본 이름을 유지하므로 Set-Cookie 출력은 정상.
+
+    마커 쿠키(STALE_PURGE_MARKER)가 이미 있는 요청은 한 번 정리된 것으로 보고 skip.
     """
+    if request is not None and request.COOKIES.get(STALE_PURGE_MARKER) == '1':
+        return response
+
     past = 'Thu, 01-Jan-1970 00:00:00 GMT'
     for domain in _STALE_COOKIE_DOMAINS:
         for name in _STALE_COOKIE_NAMES:
@@ -41,6 +51,15 @@ def clear_stale_domain_cookies(response):
             morsel['max-age'] = 0
             morsel['path'] = '/'
             response.cookies[f'__stale__{name}__{domain}'] = morsel
+
+    response.set_cookie(
+        STALE_PURGE_MARKER,
+        '1',
+        max_age=60 * 60 * 24 * 365,
+        samesite='Lax',
+        secure=not settings.IS_LOCAL,
+        httponly=True,
+    )
     return response
 
 

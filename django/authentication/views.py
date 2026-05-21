@@ -14,7 +14,7 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 
 from authentication.services import AuthService
-from authentication.utils import set_jwt_cookies, delete_jwt_cookies, clear_stale_domain_cookies
+from authentication.utils import set_jwt_cookies, delete_jwt_cookies
 from authentication.serializers import UserBoothSignupSerializer
 
 logger = logging.getLogger(__name__)
@@ -64,8 +64,8 @@ class SignupAPIView(APIView):
                 },
             }, status=status.HTTP_201_CREATED)
 
-            # 5. 쿠키 설정 (Utils) - 옛 도메인 잔재 정리 후 host-only로 재발급
-            clear_stale_domain_cookies(response)
+            # 5. 쿠키 설정 (Utils) - host-only로 발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -138,8 +138,8 @@ class AuthAPIView(APIView):
                 }
             }, status=status.HTTP_200_OK)
 
-            # 4. 쿠키 설정 (Utils) - 옛 도메인 잔재 정리 후 host-only로 재발급
-            clear_stale_domain_cookies(response)
+            # 4. 쿠키 설정 (Utils) - host-only로 발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -159,9 +159,9 @@ class AuthAPIView(APIView):
             "message": "로그아웃 성공"
         }, status=status.HTTP_200_OK)
 
-        # 쿠키 삭제 (Utils) - 현재 host-only + 옛 도메인 잔재 모두 정리
+        # 쿠키 삭제 (Utils) - 현재 host-only 쿠키 삭제
+        # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
         delete_jwt_cookies(response)
-        clear_stale_domain_cookies(response)
 
         return response
 
@@ -217,8 +217,8 @@ class TokenRefreshAPIView(APIView):
                 }
             }, status=status.HTTP_200_OK)
 
-            # 쿠키 설정 (Utils) - 옛 도메인 잔재 정리 후 host-only로 재발급
-            clear_stale_domain_cookies(response)
+            # 쿠키 설정 (Utils) - host-only로 재발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -246,11 +246,10 @@ class CsrfTokenView(APIView):
     authentication_classes = []
     
     def get(self, request):
-        """CSRF 토큰 발급 (+ 옛 도메인 잔재 쿠키 정리)"""
+        """CSRF 토큰 발급"""
         csrf_token = get_token(request)
         response = Response({
             "csrfToken": csrf_token
         }, status=status.HTTP_200_OK)
-        # 새 host-only csrftoken이 set되기 전에 옛 도메인 쿠키를 expire 처리
-        clear_stale_domain_cookies(response)
+        # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
         return response

@@ -278,4 +278,62 @@ class CsrfTokenViewTest(APITestCase):
         response = self.client.get(self.csrf_url)
 
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('csrfToken', response.data) 
+        self.assertIn('csrfToken', response.data)
+
+
+class StaleCookiePurgeMiddlewareTest(APITestCase):
+    """옛 도메인 잔재 쿠키 자동 일소 미들웨어 테스트.
+
+    부모 도메인(`.dorder-api.shop`)으로 박힌 잔재 쿠키를 응답 전반에서
+    자동으로 expire 처리하여 dev/prod 간 CSRF 충돌을 막는다.
+    """
+
+    def setUp(self):
+        from authentication.utils import _STALE_COOKIE_DOMAINS, _STALE_COOKIE_NAMES, STALE_PURGE_MARKER
+        self.stale_domains = _STALE_COOKIE_DOMAINS
+        self.stale_names = _STALE_COOKIE_NAMES
+        self.marker_name = STALE_PURGE_MARKER
+        # 어떤 GET endpoint든 응답 전반에 미들웨어가 작동해야 함
+        self.any_url = '/api/v3/django/auth/csrf-token/'
+
+    def test_attaches_expire_morsel_for_each_domain_name_pair(self):
+        """마커가 없는 요청 응답에 (도메인 × 이름) 조합 expire morsel이 모두 부착된다."""
+        response = self.client.get(self.any_url)
+
+        for domain in self.stale_domains:
+            for name in self.stale_names:
+                key = f'__stale__{name}__{domain}'
+                self.assertIn(key, response.cookies)
+                morsel = response.cookies[key]
+                self.assertEqual(morsel.key, name)
+                self.assertEqual(morsel.value, '')
+                self.assertEqual(morsel['max-age'], 0)
+                self.assertEqual(morsel['domain'], domain)
+                self.assertEqual(morsel['path'], '/')
+
+    def test_sets_purge_marker(self):
+        """정리가 일어난 응답에는 마커 쿠키가 host-only로 set된다."""
+        response = self.client.get(self.any_url)
+
+        self.assertIn(self.marker_name, response.cookies)
+        marker = response.cookies[self.marker_name]
+        self.assertEqual(marker.value, '1')
+        # host-only: domain 비어있어야 함
+        self.assertEqual(marker['domain'], '')
+
+    def test_skips_when_marker_already_set(self):
+        """이미 마커 쿠키를 보유한 요청은 cleanup을 skip한다."""
+        response = self.client.get(
+            self.any_url,
+            HTTP_COOKIE=f'{self.marker_name}=1',
+        )
+
+        # expire morsel이 응답에 부착되지 않아야 함
+        for domain in self.stale_domains:
+            for name in self.stale_names:
+                self.assertNotIn(
+                    f'__stale__{name}__{domain}',
+                    response.cookies,
+                )
+        # 마커도 다시 set되지 않아야 함 (이미 있으니까)
+        self.assertNotIn(self.marker_name, response.cookies)
