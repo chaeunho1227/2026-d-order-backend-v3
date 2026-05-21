@@ -38,6 +38,11 @@ def clear_stale_domain_cookies(response, request=None):
         return response
 
     past = 'Thu, 01-Jan-1970 00:00:00 GMT'
+    # cross-site 응답에서 SameSite 미지정 Set-Cookie는 Chrome 등이 Lax로 기본 적용 후
+    # 차단함 ('SameSite=None' 명시 필요). 차단되면 stale 매칭/삭제 자체가 일어나지 않아
+    # 잔재가 영구히 남는다. dev는 cross-site 운영이므로 None; Secure 필수.
+    stale_secure = not settings.IS_LOCAL
+    stale_samesite = 'None' if settings.IS_DEVELOPMENT else 'Lax'
     for domain in _STALE_COOKIE_DOMAINS:
         for name in _STALE_COOKIE_NAMES:
             morsel = http.cookies.Morsel()
@@ -46,6 +51,9 @@ def clear_stale_domain_cookies(response, request=None):
             morsel['expires'] = past
             morsel['max-age'] = 0
             morsel['path'] = '/'
+            if stale_secure:
+                morsel['secure'] = True
+            morsel['samesite'] = stale_samesite
             response.cookies[f'__stale__{name}__{domain}'] = morsel
 
     # 마커는 dev/prod의 cross-site fetch에도 동행해야 skip이 작동한다.
