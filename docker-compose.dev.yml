@@ -144,7 +144,7 @@ services:
       DB_PASSWORD: ${POSTGRES_PASSWORD}
       DB_HOST: postgres
       DB_PORT: 5432
-      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-60}
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-0}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
