@@ -6,22 +6,23 @@ import http.cookies
 from django.conf import settings
 
 
-# 과거 도메인 설정(`.dorder-api.shop`, `dev.dorder-api.shop` 등) 시기에
-# 사용자 브라우저에 박힌 잔재 쿠키를 자동 정리하기 위한 도메인/이름 변형 목록.
-# delete_cookie는 Set-Cookie의 Domain attr이 정확히 일치해야 브라우저가 지우므로
-# 알려진 모든 변형을 시도해야 한다.
+# 과거 `Domain=.dorder-api.shop` 부모 도메인으로 발급되어 dev/prod 서브도메인
+# 모두로 누수되는 쿠키만 정리 대상. `dev.*`/`prod.*`/`admin.*`는 host-only라
+# 다른 환경으로 누수되지 않아 정리할 필요가 없고, 변형을 추가할수록 응답 헤더가
+# 부풀어 nginx `proxy_buffer_size` 초과로 502를 유발한다 (#440 hotfix).
 _STALE_COOKIE_DOMAINS = (
     '.dorder-api.shop',
     'dorder-api.shop',
-    'dev.dorder-api.shop',
-    '.dev.dorder-api.shop',
-    'prod.dorder-api.shop',
-    '.prod.dorder-api.shop',
 )
 _STALE_COOKIE_NAMES = ('csrftoken', 'sessionid', 'access_token', 'refresh_token')
 
+# 정리 1회 실행 식별자. 정리 대상이 바뀌면 v3/v4로 bump하여 기존 클라이언트 재정리를 유도.
+# v1: 8 도메인 × 4 이름 = 32 헤더 → 응답 헤더 too big으로 502 유발
+# v2: 2 부모 도메인 × 4 이름 = 8 헤더 (현재)
+STALE_PURGE_MARKER = '_stale_purged_v2'
 
-def clear_stale_domain_cookies(response):
+
+def clear_stale_domain_cookies(response, request=None):
     """옛 도메인 쿠키(부모도메인/서브도메인 변형)를 모두 expire 처리한다.
 
     Django response.cookies는 SimpleCookie(이름 기준 dict)라 같은 이름으로
@@ -30,8 +31,18 @@ def clear_stale_domain_cookies(response):
     새 쿠키에 잘못된 Domain attr이 붙는 문제가 있다.
     이를 회피하기 위해 각 변형을 고유한 dict 키로 Morsel 객체를 직접 넣는다.
     Morsel.key는 'csrftoken' 등 원본 이름을 유지하므로 Set-Cookie 출력은 정상.
+
+    마커 쿠키(STALE_PURGE_MARKER)가 이미 있는 요청은 한 번 정리된 것으로 보고 skip.
     """
+    if request is not None and request.COOKIES.get(STALE_PURGE_MARKER) == '1':
+        return response
+
     past = 'Thu, 01-Jan-1970 00:00:00 GMT'
+    # cross-site 응답에서 SameSite 미지정 Set-Cookie는 Chrome 등이 Lax로 기본 적용 후
+    # 차단함 ('SameSite=None' 명시 필요). 차단되면 stale 매칭/삭제 자체가 일어나지 않아
+    # 잔재가 영구히 남는다. dev는 cross-site 운영이므로 None; Secure 필수.
+    stale_secure = not settings.IS_LOCAL
+    stale_samesite = 'None' if settings.IS_DEVELOPMENT else 'Lax'
     for domain in _STALE_COOKIE_DOMAINS:
         for name in _STALE_COOKIE_NAMES:
             morsel = http.cookies.Morsel()
@@ -40,7 +51,23 @@ def clear_stale_domain_cookies(response):
             morsel['expires'] = past
             morsel['max-age'] = 0
             morsel['path'] = '/'
+            if stale_secure:
+                morsel['secure'] = True
+            morsel['samesite'] = stale_samesite
             response.cookies[f'__stale__{name}__{domain}'] = morsel
+
+    # 마커는 dev/prod의 cross-site fetch에도 동행해야 skip이 작동한다.
+    # 같은 정책의 csrftoken/access_token이 dev에서 SameSite=None을 쓰는 이유와 동일.
+    # 마커가 cross-site 요청에 전송되지 않으면 매 응답마다 cleanup이 반복 실행되어
+    # 응답 헤더가 부풀고 stale 정리 의미도 없어진다.
+    response.set_cookie(
+        STALE_PURGE_MARKER,
+        '1',
+        max_age=60 * 60 * 24 * 365,
+        samesite='None' if settings.IS_DEVELOPMENT else 'Lax',
+        secure=not settings.IS_LOCAL,
+        httponly=True,
+    )
     return response
 
 
