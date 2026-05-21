@@ -157,7 +157,7 @@ services:
       options:
         awslogs-region: ap-northeast-2
         awslogs-group: /d-order/prod
-        awslogs-stream: django-blue
+        awslogs-stream: django
         awslogs-create-group: "true"
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
@@ -216,7 +216,7 @@ services:
       options:
         awslogs-region: ap-northeast-2
         awslogs-group: /d-order/prod
-        awslogs-stream: django-green
+        awslogs-stream: django
         awslogs-create-group: "true"
     healthcheck:
       test: ['CMD', 'curl', '-f', 'http://localhost:8000/health']
@@ -274,7 +274,7 @@ services:
       options:
         awslogs-region: ap-northeast-2
         awslogs-group: /d-order/prod
-        awslogs-stream: spring-blue
+        awslogs-stream: spring
         awslogs-create-group: "true"
     networks:
       - d-order-network-prod
@@ -323,7 +323,7 @@ services:
       options:
         awslogs-region: ap-northeast-2
         awslogs-group: /d-order/prod
-        awslogs-stream: spring-green
+        awslogs-stream: spring
         awslogs-create-group: "true"
     networks:
       - d-order-network-prod
