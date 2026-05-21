@@ -558,6 +558,12 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
         # BoothSalesConsumer는 메뉴 집계를 다루지 않음
         pass
 
+    async def admin_table_reset(self, event):
+        pass
+
+    async def admin_table_merge(self, event):
+        pass
+
     async def _get_today_revenue(self):
         """오늘 매출 (캐시 우선, 미스 시 DB 초기화)"""
         from order.cache import get_today_revenue
