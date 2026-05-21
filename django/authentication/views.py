@@ -34,8 +34,8 @@ class SignupAPIView(APIView):
         serializer = UserBoothSignupSerializer(data=request.data)
         if not serializer.is_valid():
             logger.warning(
-                "[Signup] 입력값 검증 실패 | username=%s | errors=%s",
-                username, serializer.errors
+                "[Signup] 입력값 검증 실패 | username=%s | error_fields=%s",
+                username, list(serializer.errors.keys())
             )
             return Response({
                 "message": "회원가입에 실패했습니다.",
@@ -228,6 +228,7 @@ class TokenRefreshAPIView(APIView):
             return response
 
         except Exception:
+            logger.warning("[TokenRefresh] 갱신 실패", exc_info=True)
             return Response({
                 "message": "Refresh 토큰이 유효하지 않음"
             }, status=status.HTTP_401_UNAUTHORIZED)

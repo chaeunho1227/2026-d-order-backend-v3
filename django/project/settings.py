@@ -323,6 +323,11 @@ LOGGING = {
             'level': 'DEBUG',
             'propagate': False,
         },
+        'table': {
+            'handlers': ['console'] + _file_handler,
+            'level': 'DEBUG',
+            'propagate': False,
+        },
     },
 }
 
