@@ -152,7 +152,6 @@ services:
         condition: service_healthy
     volumes:
       - static_volume_prod:/app/static
-      - django_logs_prod:/app/logs
     logging:
       driver: awslogs
       options:
@@ -212,7 +211,6 @@ services:
         condition: service_healthy
     volumes:
       - static_volume_prod:/app/static
-      - django_logs_prod:/app/logs
     logging:
       driver: awslogs
       options:
@@ -337,8 +335,6 @@ volumes:
   redis_data_prod:
     driver: local
   static_volume_prod:
-    driver: local
-  django_logs_prod:
     driver: local
   certbot_www:
     driver: local

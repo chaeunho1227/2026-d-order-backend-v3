@@ -149,7 +149,6 @@ services:
         condition: service_healthy
     volumes:
       - static_volume_dev:/app/static
-      - ./logs/django:/app/logs
     logging:
       driver: json-file
       options:
