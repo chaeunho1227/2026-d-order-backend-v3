@@ -4,6 +4,8 @@ services:
     container_name: d-order-nginx-prod
     environment:
       DOMAIN: ${DOMAIN:-dorder-api.shop}
+      # /media/* 경로 S3 proxy origin (Cloudflare가 엣지에서 캐싱)
+      AWS_S3_HOST: ${AWS_STORAGE_BUCKET_NAME}.s3.${AWS_S3_REGION_NAME}.amazonaws.com
     ports:
       - '80:80'
       - '443:443'
