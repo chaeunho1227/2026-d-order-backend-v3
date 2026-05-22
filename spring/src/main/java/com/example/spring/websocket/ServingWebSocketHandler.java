@@ -1,8 +1,10 @@
 package com.example.spring.websocket;
 
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -10,6 +12,7 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
@@ -56,6 +59,51 @@ public class ServingWebSocketHandler extends TextWebSocketHandler {
             log.info("[serving ws] 연결 해제 boothId={}, session={}, status={}", boothId, session.getId(), status);
         } else {
             log.info("[serving ws] 연결 해제(boothId 없음) session={}, status={}", session.getId(), status);
+        }
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        JsonNode root = objectMapper.readTree(message.getPayload());
+        String type = root.path("type").asText("");
+        if ("PING".equalsIgnoreCase(type)) {
+            sendHeartbeatPong(session);
+        }
+    }
+
+    private void sendHeartbeatPong(WebSocketSession session) throws IOException {
+        Map<String, Object> body = new HashMap<>();
+        body.put("type", "PONG");
+        body.put("timestamp", OffsetDateTime.now().toString());
+        body.put("message", "heartbeat");
+        body.put("data", null);
+        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(body)));
+    }
+
+    // Cloudflare Free WebSocket idle 100s 종료 방지: 25s마다 전체 세션에 PONG 푸시.
+    @Scheduled(fixedRate = 25000)
+    public void broadcastHeartbeat() {
+        if (boothSessions.isEmpty()) return;
+        try {
+            Map<String, Object> body = new HashMap<>();
+            body.put("type", "PONG");
+            body.put("timestamp", OffsetDateTime.now().toString());
+            body.put("message", "heartbeat");
+            body.put("data", null);
+            TextMessage tm = new TextMessage(objectMapper.writeValueAsString(body));
+            for (Set<WebSocketSession> sessions : boothSessions.values()) {
+                for (WebSocketSession s : sessions) {
+                    if (s.isOpen()) {
+                        try {
+                            s.sendMessage(tm);
+                        } catch (IOException e) {
+                            log.warn("[serving ws] heartbeat 전송 실패 session={}", s.getId(), e);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("[serving ws] heartbeat 직렬화 실패", e);
         }
     }
 

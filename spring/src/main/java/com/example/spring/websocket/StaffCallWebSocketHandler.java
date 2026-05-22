@@ -8,6 +8,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -142,5 +143,32 @@ public class StaffCallWebSocketHandler extends TextWebSocketHandler {
         body.put("message", "heartbeat");
         body.put("data", null);
         session.sendMessage(new TextMessage(objectMapper.writeValueAsString(body)));
+    }
+
+    // Cloudflare Free WebSocket idle 100s 종료 방지: 클라이언트 PING이 없어도 서버가 25s마다 PONG 푸시.
+    @Scheduled(fixedRate = 25000)
+    public void broadcastHeartbeat() {
+        if (boothSessions.isEmpty()) return;
+        try {
+            Map<String, Object> body = new HashMap<>();
+            body.put("type", "PONG");
+            body.put("timestamp", OffsetDateTime.now().toString());
+            body.put("message", "heartbeat");
+            body.put("data", null);
+            TextMessage tm = new TextMessage(objectMapper.writeValueAsString(body));
+            for (Set<WebSocketSession> sessions : boothSessions.values()) {
+                for (WebSocketSession s : sessions) {
+                    if (s.isOpen()) {
+                        try {
+                            s.sendMessage(tm);
+                        } catch (IOException e) {
+                            log.warn("[staffcall ws] heartbeat 전송 실패 session={}", s.getId(), e);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("[staffcall ws] heartbeat 직렬화 실패", e);
+        }
     }
 }
