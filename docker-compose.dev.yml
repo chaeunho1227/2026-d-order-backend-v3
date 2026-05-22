@@ -116,6 +116,49 @@ services:
       - d-order-network-dev
     restart: unless-stopped
 
+  # ASGI worker 다중화 환경에서 Django/Spring 의 PG connection 폭주를
+  # transaction pooling 으로 흡수. Django 6.0 + UvicornWorker 의 thread-local
+  # connection 누수 패턴을 PG 쪽에서 격리한다.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.1
+    container_name: d-order-pgbouncer-dev
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      AUTH_TYPE: scram-sha-256
+      AUTH_QUERY: "SELECT usename, passwd FROM pg_shadow WHERE usename=$$1"
+      AUTH_USER: ${POSTGRES_USER}
+      AUTH_DBNAME: ${POSTGRES_DB}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 500
+      DEFAULT_POOL_SIZE: 25
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_RESET_QUERY: DISCARD ALL
+      ADMIN_USERS: ${POSTGRES_USER}
+      STATS_USERS: ${POSTGRES_USER}
+    expose:
+      - '6432'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -p 6432 -U ${POSTGRES_USER}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - d-order-network-dev
+    restart: unless-stopped
+
   django:
     image: ${DOCKER_USERNAME:-local}/d-order-django:dev
     container_name: d-order-django-dev
