@@ -191,8 +191,8 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres
-      DB_PORT: 5432
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
       DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-0}
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -209,7 +209,7 @@ services:
     expose:
       - '8000'
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -261,8 +261,8 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres
-      DB_PORT: 5432
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
       DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-0}
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -279,7 +279,7 @@ services:
     expose:
       - '8000'
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
