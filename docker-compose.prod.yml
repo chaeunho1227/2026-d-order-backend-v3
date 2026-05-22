@@ -62,7 +62,7 @@ services:
     command:
       - postgres
       - -c
-      - max_connections=200
+      - max_connections=100
       - -c
       - shared_buffers=256MB
     # 필수 env가 비어 있으면 컨테이너를 띄우지 않음 (빈 비밀번호로 유저가 생성되는 사고 방지)
