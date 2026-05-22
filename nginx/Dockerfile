@@ -26,4 +26,4 @@ ENV NGINX_ENV=${NGINX_ENV}
 EXPOSE 80 443
 
 # 환경변수 치환 후 nginx 시작
-CMD ["/bin/sh", "-c", "envsubst '${DOMAIN}' < /etc/nginx/nginx.conf.${NGINX_ENV}.template > /etc/nginx/nginx.conf && nginx -g 'daemon off;'"]
+CMD ["/bin/sh", "-c", "envsubst '${DOMAIN} ${AWS_S3_HOST}' < /etc/nginx/nginx.conf.${NGINX_ENV}.template > /etc/nginx/nginx.conf && nginx -g 'daemon off;'"]
