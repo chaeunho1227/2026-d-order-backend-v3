@@ -84,8 +84,10 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    # Docker 네트워크 내에서는 서비스 이름(postgres)으로 접속
-    url: jdbc:postgresql://postgres:5432/${POSTGRES_DB:d_order}
+    # Docker 네트워크 내에서는 pgbouncer(6432) 를 거쳐 PG 에 접속 (transaction pooling).
+    # prepareThreshold=0 필수 — transaction pooling 에서 server-side prepared statement
+    # 가 다른 백엔드 connection 으로 redispatch 되면 "prepared statement does not exist".
+    url: jdbc:postgresql://${DB_HOST:pgbouncer}:6432/${POSTGRES_DB:d_order}?prepareThreshold=0
     # Spring 전용 유저 사용 (init-db.sh에서 생성됨)
     # 보안: Django와 분리된 권한 관리
     username: ${SPRING_DB_USER:spring_user}
@@ -130,7 +132,8 @@ spring:
     activate:
       on-profile: prod
   datasource:
-    url: jdbc:postgresql://${DB_HOST}:5432/${POSTGRES_DB:d_order}
+    # DB_HOST 는 compose 에서 pgbouncer 로 주입. prepareThreshold=0 필수.
+    url: jdbc:postgresql://${DB_HOST}:6432/${POSTGRES_DB:d_order}?prepareThreshold=0
     username: ${SPRING_DB_USER}
     password: ${SPRING_DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
