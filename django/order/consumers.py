@@ -1,3 +1,5 @@
+import asyncio
+
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import F, Value, CharField, Prefetch
@@ -29,10 +31,13 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
       ⑨ ADMIN_TABLE_MERGE     – 테이블 병합 (주문 갱신)
     """
 
+    HEARTBEAT_INTERVAL_SECONDS = 25
+
     # ───────────────────────────────────────────
     # 연결 / 해제 / 수신
     # ───────────────────────────────────────────
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -44,6 +49,7 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         logger.info(f"[Order WS] 연결됨: {self.group_name}")
         await self.send_order_snapshot()
         await self.send_menu_aggregation()
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def _authenticate(self):
         """JWT 쿠키 인증 → booth_id 반환, 실패 시 None"""
@@ -66,6 +72,9 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
             return None
 
     async def disconnect(self, close_code):
+        if getattr(self, "heartbeat_task", None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f"[Order WS] 연결 해제: {self.group_name} (code: {close_code})")
@@ -318,6 +327,21 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         from order.cache import get_today_revenue
         return await sync_to_async(get_today_revenue)(self.booth_id)
 
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    "type": "PONG",
+                    "timestamp": timezone.localtime().isoformat(),
+                    "message": "heartbeat",
+                    "data": None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(f"[Order WS] heartbeat failed: booth_id={self.booth_id}, error={e}")
+
     # ───────────────────────────────────────────
     # ⑦ TOTAL_SALES_UPDATE (group_send handler)
     # ───────────────────────────────────────────
@@ -477,7 +501,10 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
       ② TOTAL_SALES_UPDATE    – 주문 생성/취소 시 갱신
     """
 
+    HEARTBEAT_INTERVAL_SECONDS = 25
+
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -488,6 +515,7 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
 
         logger.info(f"[Sales WS] 연결됨: {self.group_name}")
         await self._send_sales_snapshot()
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def _authenticate(self):
         user = self.scope.get("user")
@@ -503,6 +531,9 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
             return None
 
     async def disconnect(self, close_code):
+        if getattr(self, "heartbeat_task", None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f"[Sales WS] 연결 해제: {self.group_name} (code: {close_code})")
@@ -562,4 +593,19 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
         """오늘 매출 (캐시 우선, 미스 시 DB 초기화)"""
         from order.cache import get_today_revenue
         return await sync_to_async(get_today_revenue)(self.booth_id)
+
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    "type": "PONG",
+                    "timestamp": timezone.localtime().isoformat(),
+                    "message": "heartbeat",
+                    "data": None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(f"[Sales WS] heartbeat failed: booth_id={self.booth_id}, error={e}")
 

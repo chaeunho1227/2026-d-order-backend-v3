@@ -1,3 +1,5 @@
+import asyncio
+
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
@@ -12,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 class BaseTableConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
     """테이블 Consumer 공통 기반"""
+
+    HEARTBEAT_INTERVAL_SECONDS = 25
 
     async def _authenticate(self):
         """WebSocket 연결 처리"""
@@ -38,6 +42,21 @@ class BaseTableConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
             'data': None
         })
 
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    "type": "PONG",
+                    "timestamp": timezone.localtime().isoformat(),
+                    "message": "heartbeat",
+                    "data": None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(f"[Table WS] heartbeat failed: booth_id={getattr(self, 'booth_id', None)}, error={e}")
+
 
 class TableConsumer(TableMixin, BaseTableConsumer):
     """부스 테이블 목록 WebSocket Consumer
@@ -46,6 +65,7 @@ class TableConsumer(TableMixin, BaseTableConsumer):
     """
 
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -65,8 +85,12 @@ class TableConsumer(TableMixin, BaseTableConsumer):
                 'booth_id': self.booth_id
             }
         })
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def disconnect(self, close_code):
+        if getattr(self, 'heartbeat_task', None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f'WebSocket 연결 해제: {self.group_name} (code: {close_code})')
@@ -79,6 +103,7 @@ class TableDetailConsumer(TableDetailMixin, BaseTableConsumer):
     """
 
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -100,8 +125,12 @@ class TableDetailConsumer(TableDetailMixin, BaseTableConsumer):
                 'table_num': self.table_num
             }
         })
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def disconnect(self, close_code):
+        if getattr(self, 'heartbeat_task', None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f'WebSocket 연결 해제: {self.group_name} (code: {close_code})')

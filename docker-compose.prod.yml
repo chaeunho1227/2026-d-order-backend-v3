@@ -4,6 +4,7 @@ services:
     container_name: d-order-nginx-prod
     environment:
       DOMAIN: ${DOMAIN:-dorder-api.shop}
+      AWS_S3_HOST: ${AWS_STORAGE_BUCKET_NAME}.s3.${AWS_S3_REGION_NAME}.amazonaws.com
     ports:
       - '80:80'
       - '443:443'

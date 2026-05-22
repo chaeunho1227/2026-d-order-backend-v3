@@ -10,10 +10,13 @@ import org.springframework.web.socket.WebSocketSession;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.time.OffsetDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+
+import com.fasterxml.jackson.databind.JsonNode;
 
 import static com.example.spring.config.StaffCallHandshakeInterceptor.ATTR_BOOTH_ID;
 
@@ -40,6 +43,19 @@ public class ServingWebSocketHandler extends TextWebSocketHandler {
 
         boothSessions.computeIfAbsent(boothId, key -> ConcurrentHashMap.newKeySet()).add(session);
         log.info("[serving ws] 연결 boothId={}, session={}", boothId, session.getId());
+    }
+
+    @Override
+    protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
+        JsonNode root = objectMapper.readTree(message.getPayload());
+        if ("PING".equalsIgnoreCase(root.path("type").asText(""))) {
+            Map<String, Object> body = new HashMap<>();
+            body.put("type", "PONG");
+            body.put("timestamp", OffsetDateTime.now().toString());
+            body.put("message", "heartbeat");
+            body.put("data", null);
+            session.sendMessage(new TextMessage(objectMapper.writeValueAsString(body)));
+        }
     }
 
     @Override
