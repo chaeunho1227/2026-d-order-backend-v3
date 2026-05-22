@@ -124,7 +124,7 @@ services:
   # transaction pooling 으로 흡수. Django 6.0 + UvicornWorker 의 thread-local
   # connection 누수 패턴을 PG 쪽에서 격리한다.
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.1
+    image: edoburu/pgbouncer:v1.24.1-p1
     container_name: d-order-pgbouncer-prod
     environment:
       DB_HOST: postgres
