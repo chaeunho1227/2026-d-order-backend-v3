@@ -56,6 +56,13 @@ services:
   postgres:
     image: postgres:15-alpine
     container_name: d-order-postgres-dev
+    # prod 와 동일하게 다중 워커 + persistent connection 동시 접속 여유 확보
+    command:
+      - postgres
+      - -c
+      - max_connections=100
+      - -c
+      - shared_buffers=256MB
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -109,10 +116,65 @@ services:
       - d-order-network-dev
     restart: unless-stopped
 
+  # ASGI worker 다중화 환경에서 Django/Spring 의 PG connection 폭주를
+  # transaction pooling 으로 흡수. Django 6.0 + UvicornWorker 의 thread-local
+  # connection 누수 패턴을 PG 쪽에서 격리한다.
+  pgbouncer:
+    image: edoburu/pgbouncer:v1.24.1-p1
+    container_name: d-order-pgbouncer-dev
+    environment:
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: ${POSTGRES_USER}
+      DB_PASSWORD: ${POSTGRES_PASSWORD}
+      LISTEN_ADDR: 0.0.0.0
+      LISTEN_PORT: 6432
+      AUTH_TYPE: scram-sha-256
+      AUTH_QUERY: "SELECT usename, passwd FROM pg_shadow WHERE usename=$$1"
+      AUTH_USER: ${POSTGRES_USER}
+      AUTH_DBNAME: ${POSTGRES_DB}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: 500
+      DEFAULT_POOL_SIZE: 25
+      MIN_POOL_SIZE: 10
+      RESERVE_POOL_SIZE: 5
+      RESERVE_POOL_TIMEOUT: 3
+      SERVER_RESET_QUERY: DISCARD ALL
+      ADMIN_USERS: ${POSTGRES_USER}
+      STATS_USERS: ${POSTGRES_USER}
+    expose:
+      - '6432'
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -p 6432 -U ${POSTGRES_USER}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - d-order-network-dev
+    restart: unless-stopped
+
   django:
     image: ${DOCKER_USERNAME:-local}/d-order-django:dev
     container_name: d-order-django-dev
-    command: daphne -b 0.0.0.0 -p 8000 project.asgi:application
+    command: >
+      gunicorn project.asgi:application
+      -k uvicorn.workers.UvicornWorker
+      -b 0.0.0.0:8000
+      --workers ${GUNICORN_WORKERS:-3}
+      --worker-connections 1000
+      --timeout 60
+      --graceful-timeout 30
+      --keep-alive 5
+      --access-logfile -
+      --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: development
       DEBUG: 'True'
@@ -125,8 +187,9 @@ services:
       DB_NAME: ${POSTGRES_DB}
       DB_USER: ${POSTGRES_USER}
       DB_PASSWORD: ${POSTGRES_PASSWORD}
-      DB_HOST: postgres
-      DB_PORT: 5432
+      DB_HOST: pgbouncer
+      DB_PORT: 6432
+      DB_CONN_MAX_AGE: ${DB_CONN_MAX_AGE:-0}
       REDIS_HOST: redis
       REDIS_PORT: 6379
       REDIS_PASSWORD: ${REDIS_PASSWORD}
@@ -143,7 +206,7 @@ services:
     expose:
       - '8000'
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -175,6 +238,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       SPRING_DB_USER: ${SPRING_DB_USER}
       SPRING_DB_PASSWORD: ${SPRING_DB_PASSWORD}
+      DB_HOST: pgbouncer
       # JWT 시크릿 키 (Django와 동일한 키 사용)
       SECRET_KEY: ${SECRET_KEY}
       # Django API URL Django API 설정 (BFF 패턴)
@@ -186,7 +250,7 @@ services:
     expose:
       - '8080'
     depends_on:
-      postgres:
+      pgbouncer:
         condition: service_healthy
       redis:
         condition: service_healthy

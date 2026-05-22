@@ -3,7 +3,7 @@ from datetime import datetime
 
 from .models import Table, TableGroup, TableUsage
 from django.utils.timezone import now
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError, NotFound
 from channels.layers import get_channel_layer
@@ -228,6 +228,12 @@ class TableService:
         if not table_num:
             raise ValidationError('테이블 번호는 필수입니다.')
 
+        # 락/문장 타임아웃: 동시 입장 폭주 시 워커가 무한 점유되지 않게 강제 종료
+        # 정상 락 보유는 수십 ms 수준이라 3s/5s에 거의 도달하지 않음
+        with connection.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '3s'")
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+
         # 테이블 조회 (행 잠금: 동시 입장 요청 시 TOCTOU 경합 방지)
         # of=('self',): nullable outer join 대상 제외, Table 행만 잠금
         table = Table.objects.select_related('group__representative_table').select_for_update(of=('self',)).filter(
@@ -261,13 +267,16 @@ class TableService:
             table.status = Table.Status.IN_USE
             table.save()
 
-        TableService._broadcast(booth.pk, {
-            'type': 'enter_table',
-            'data': {
-                'table_num': table_num,
-                'started_at': table_usage.started_at.isoformat() if table_usage.started_at else None,
-            }
-        })
+        # 페이로드 평가와 브로드캐스트를 커밋 후로 미뤄 락 보유 구간 단축
+        def _emit_enter():
+            TableService._broadcast(booth.pk, {
+                'type': 'enter_table',
+                'data': {
+                    'table_num': table_num,
+                    'started_at': table_usage.started_at.isoformat() if table_usage.started_at else None,
+                }
+            })
+        transaction.on_commit(_emit_enter)
 
         return table_usage
 
