@@ -178,6 +178,7 @@ class OrderService:
             try:
                 from channels.layers import get_channel_layer
                 from asgiref.sync import async_to_sync
+                from order.cache import query_menu_aggregation
 
                 group_name = f"booth_{booth_id}.order"
                 channel_layer = get_channel_layer()
@@ -193,12 +194,12 @@ class OrderService:
                     }
                 )
 
-                # 메뉴 집계 갱신
+                # 집계를 1회 계산해서 페이로드에 포함 → consumer별 DB 재조회 불필요
                 async_to_sync(channel_layer.group_send)(
                     group_name,
                     {
                         "type": "admin_menu_aggregation",
-                        "data": {}
+                        "data": query_menu_aggregation(booth_id),
                     }
                 )
             except Exception:
@@ -632,6 +633,7 @@ class OrderService:
             try:
                 from channels.layers import get_channel_layer
                 from asgiref.sync import async_to_sync
+                from order.cache import query_menu_aggregation
 
                 group_name = f"booth_{booth_id}.order"
                 channel_layer = get_channel_layer()
@@ -647,12 +649,12 @@ class OrderService:
                     }
                 )
 
-                # 메뉴 집계 갱신
+                # 집계를 1회 계산해서 페이로드에 포함 → consumer별 DB 재조회 불필요
                 async_to_sync(channel_layer.group_send)(
                     group_name,
                     {
                         "type": "admin_menu_aggregation",
-                        "data": {}
+                        "data": query_menu_aggregation(booth_id),
                     }
                 )
             except Exception:
@@ -883,9 +885,13 @@ class OrderService:
                         group_name,
                         {"type": "total_sales_update", "data": {"today_revenue": today_revenue}}
                     )
+                from order.cache import query_menu_aggregation
                 async_to_sync(channel_layer.group_send)(
                     group_name,
-                    {"type": "admin_menu_aggregation", "data": {}}
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
                 )
             except Exception:
                 logger.warning("[Order] WebSocket 전송 실패 (주문은 정상 생성됨)", exc_info=True)
@@ -1280,9 +1286,13 @@ class OrderService:
                         },
                     }
                 )
+                from order.cache import query_menu_aggregation
                 async_to_sync(channel_layer.group_send)(
                     group_name,
-                    {"type": "admin_menu_aggregation", "data": {}}
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
                 )
             except Exception:
                 logger.warning("[ServingCancelled] WebSocket 전송 실패", exc_info=True)

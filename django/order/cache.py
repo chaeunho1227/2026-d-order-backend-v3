@@ -175,3 +175,56 @@ def invalidate_today_revenue(booth_id: int, for_date=None) -> None:
         get_redis_client().delete(_cache_key(booth_id, target))
     except Exception as e:
         logger.warning(f"[Revenue Cache] 삭제 실패 booth={booth_id} date={target}: {e}")
+
+
+# ──────────────────────────────────────────────
+# 메뉴 집계 쿼리
+#
+# group_send 페이로드에 포함시키기 위해 서비스 레이어의
+# on_commit 콜백에서 1회만 호출한다.
+# consumer마다 DB를 직접 조회하지 않도록 분리.
+# ──────────────────────────────────────────────
+
+def query_menu_aggregation(booth_id: int) -> dict:
+    """
+    COOKING 상태 메뉴 수량 집계 (food / beverage 분류).
+
+    on_commit 콜백 내부에서 호출 → DB 커밋 이후 최신 데이터 보장.
+    결과는 group_send data 필드에 포함되어 consumer로 전달된다.
+    """
+    from order.models import OrderItem
+
+    items = list(
+        OrderItem.objects
+        .filter(
+            order__order_status="PAID",
+            order__table_usage__table__booth_id=booth_id,
+            order__table_usage__ended_at__isnull=True,
+            status="COOKING",
+            menu__isnull=False,
+        )
+        .exclude(menu__category="FEE")
+        .select_related("menu")
+    )
+
+    food_map: dict = {}
+    drink_map: dict = {}
+
+    for item in items:
+        name = item.menu.name
+        target = drink_map if item.menu.category == "DRINK" else food_map
+        target[name] = target.get(name, 0) + item.quantity
+
+    def _sort(pair):
+        return (-pair[1], pair[0])
+
+    return {
+        "food_summary": [
+            {"menu_name": k, "total_quantity": v}
+            for k, v in sorted(food_map.items(), key=_sort)
+        ],
+        "beverage_summary": [
+            {"menu_name": k, "total_quantity": v}
+            for k, v in sorted(drink_map.items(), key=_sort)
+        ],
+    }
