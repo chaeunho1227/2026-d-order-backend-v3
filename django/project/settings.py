@@ -305,6 +305,20 @@ LOGGING = {
             'level': _app_log_level,
             'propagate': False,
         },
+        # uvicorn lifecycle 로그 ("connection open/closed", "Started server" 등) 차단.
+        # WebSocket connect/disconnect 는 Django Channels consumer 가 이미 비즈니스
+        # 컨텍스트와 함께 로깅하므로 uvicorn 측 중복 제거. access log 는 gunicorn
+        # --access-logfile 로 별도 유지.
+        'uvicorn': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+        'uvicorn.error': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
     },
 }
 
