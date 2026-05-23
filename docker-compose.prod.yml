@@ -209,6 +209,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME}
       AWS_S3_REGION_NAME: ${AWS_S3_REGION_NAME}
+      # Cloudflare proxy 경유 도메인. 미설정 시 settings.py default(S3 직빙)로 fallback.
+      AWS_S3_CUSTOM_DOMAIN: ${AWS_S3_CUSTOM_DOMAIN:-}
       CUSTOMER_FRONT_BASE_URL: ${CUSTOMER_FRONT_BASE_URL}
     expose:
       - '8000'
@@ -279,6 +281,8 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       AWS_STORAGE_BUCKET_NAME: ${AWS_STORAGE_BUCKET_NAME}
       AWS_S3_REGION_NAME: ${AWS_S3_REGION_NAME}
+      # Cloudflare proxy 경유 도메인. 미설정 시 settings.py default(S3 직빙)로 fallback.
+      AWS_S3_CUSTOM_DOMAIN: ${AWS_S3_CUSTOM_DOMAIN:-}
       CUSTOMER_FRONT_BASE_URL: ${CUSTOMER_FRONT_BASE_URL}
     expose:
       - '8000'
