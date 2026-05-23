@@ -38,7 +38,7 @@ class Booth(models.Model):
     seat_fee_table = models.IntegerField(null=True, blank=True)
 
     # 운영 정보
-    operate_dates = models.JSONField(default=dict)
+    operate_dates = models.JSONField(default=list)
     host_name = models.CharField(max_length=100, blank=True, null=True, help_text="주최 이름")
     total_revenues = models.IntegerField(default=0)
     location = models.CharField(max_length=200, blank=True, null=True, help_text="부스 위치")
