@@ -126,6 +126,8 @@ class BoothAdBannerAPIView(APIView):
         booths = (
             Booth.objects
             .filter(operate_dates__contains=[date_str])
+            .exclude(location__isnull=True)
+            .exclude(location='')
             .annotate(remaining_table=Count('tables', filter=Q(tables__status='AVAILABLE')))
             .order_by('pk')
         )
@@ -141,7 +143,5 @@ class BoothAdBannerAPIView(APIView):
 
         return Response({
             "message": "부스 광고 배너 정보 조회 성공",
-            "data": {
-                "boothDetails": booth_details,
-            }
+            "data": booth_details,
         }, status=status.HTTP_200_OK)
