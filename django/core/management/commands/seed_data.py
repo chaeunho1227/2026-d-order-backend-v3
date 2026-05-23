@@ -219,10 +219,7 @@ class Command(BaseCommand):
             seat_type=cfg["seat_type"],
             seat_fee_person=cfg["seat_fee_person"],
             seat_fee_table=cfg["seat_fee_table"],
-            operate_dates={
-                "mon": True, "tue": True, "wed": True,
-                "thu": True, "fri": True, "sat": True, "sun": False,
-            },
+            operate_dates=["2026-05-22", "2026-05-23", "2026-05-24"],
             host_name=f"{cfg['name']} 운영팀",
             total_revenues=0,
             location=cfg["location"],

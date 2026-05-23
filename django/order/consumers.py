@@ -265,8 +265,18 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         })
 
     async def admin_menu_aggregation(self, event):
-        """group_send 핸들러: 외부에서 집계 갱신 트리거 시"""
-        await self.send_menu_aggregation()
+        """group_send 핸들러: 서비스 레이어에서 계산된 집계를 수신"""
+        data = event.get("data")
+        if data:
+            # 서비스 레이어에서 이미 계산된 결과 → DB 재조회 없이 전송
+            await self.send_json({
+                "type": "MENU_AGGREGATION",
+                "timestamp": timezone.localtime().isoformat(),
+                "data": data,
+            })
+        else:
+            # data 없는 레거시 이벤트 호환
+            await self.send_menu_aggregation()
 
     # ───────────────────────────────────────────
     # Private: DB 조회 / 직렬화
@@ -286,74 +296,20 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
                 Q(items__setmenu__isnull=False) |
                 Q(items__menu__category__in=["MENU", "DRINK"])
             ).distinct().select_related("table_usage__table").order_by("created_at")
-            count = qs.count()
-            logger.debug(f"[Order WS] DB 결과: {count}개 주문")
-            return list(qs)
+            result = list(qs)
+            logger.debug(f"[Order WS] DB 결과: {len(result)}개 주문")
+            return result
         
         return await sync_to_async(_query)()
 
     async def _get_menu_aggregation(self):
         """
         DB에서 메뉴별 수량 집계 조회.
-        리프 아이템만 대상 (세트메뉴 부모 제외, 자식 OrderItem + 일반 메뉴).
-        조리중(COOKING) 상태인 것만 대상. 조리완료되면 집계에서 제외됨.
+        최초 연결 시 스냅샷 전송에만 사용.
+        이벤트 발생 시에는 서비스 레이어에서 계산된 결과를 group_send로 수신.
         """
-        active_statuses = ["COOKING", "cooking"]  # 대소문자 혼용 대응
-
-        def _query():
-            # 리프 아이템만 집계: 메뉴가 있는 아이템들 (세트메뉴 부모 제외, 자식 + 일반 메뉴)
-            # FEE 카테고리는 제외 (테이블 이용료는 메뉴 집계에서 제외)
-            qs = (
-                OrderItem.objects
-                .filter(
-                    order__order_status="PAID",
-                    order__table_usage__table__booth_id=self.booth_id,
-                    order__table_usage__ended_at__isnull=True,  # 초기화된 테이블 제외
-                    status__in=active_statuses,
-                    menu__isnull=False,  # 세트메뉴 부모(menu=None) 자동 제외, 자식·일반 포함
-                )
-                .exclude(menu__category="FEE")
-                .select_related("menu")
-            )
-
-            qs_count = qs.count()
-
-            food_map = {}
-            drink_map = {}
-
-            for item in qs:
-                # 일반 메뉴 또는 세트메뉴 구성품의 메뉴 이름
-                name = item.menu.name
-                category = item.menu.category
-                target = drink_map if category == "DRINK" else food_map
-                target[name] = target.get(name, 0) + item.quantity
-
-            def sort_key(pair):
-                return (-pair[1], pair[0])
-
-            food_summary = [
-                {"menu_name": k, "total_quantity": v}
-                for k, v in sorted(food_map.items(), key=sort_key)
-            ]
-            beverage_summary = [
-                {"menu_name": k, "total_quantity": v}
-                for k, v in sorted(drink_map.items(), key=sort_key)
-            ]
-
-            logger.debug(
-                "[Order WS] MENU_AGGREGATION 조회 - booth_id=%s, qs=%s, food=%s, drink=%s",
-                self.booth_id,
-                qs_count,
-                food_summary,
-                beverage_summary,
-            )
-
-            return {
-                "food_summary": food_summary,
-                "beverage_summary": beverage_summary,
-            }
-
-        return await sync_to_async(_query)()
+        from order.cache import query_menu_aggregation
+        return await sync_to_async(query_menu_aggregation)(self.booth_id)
 
     async def _get_total_sales(self):
         """오늘 매출 (캐시 우선, 미스 시 DB 초기화)"""

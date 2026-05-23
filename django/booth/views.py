@@ -1,3 +1,5 @@
+from django.db.models import Count, Q
+
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
 from rest_framework import status
@@ -99,10 +101,51 @@ class BoothNameAPIView(APIView):
     def get(self, request):
         """QR URL 반환"""
         booth = request.user.booth
-        
+
         return Response({
             "message": "부스 이름을 조회하였습니다.",
             "data" : {
                 "booth_name" : booth.name,
             }
+        }, status=status.HTTP_200_OK)
+
+
+class BoothAdBannerAPIView(APIView):
+    """광고 배너용 부스 목록 조회 API (인증 불필요)"""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        date_str = request.query_params.get('date')
+        if not date_str:
+            return Response(
+                {"message": "date 파라미터가 필요합니다. (예: ?date=2026-05-23)"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        booths = (
+            Booth.objects
+            .filter(operate_dates__contains=[date_str])
+            .exclude(location__isnull=True)
+            .exclude(location='')
+            .annotate(
+                total_table=Count('tables'),
+                remaining_table=Count('tables', filter=Q(tables__status='AVAILABLE')),
+            )
+            .order_by('pk')
+        )
+
+        booth_details = [
+            {
+                "boothName": booth.name,
+                "location": booth.location or "",
+                "totalTable": booth.total_table,
+                "remainingTable": booth.remaining_table,
+            }
+            for booth in booths
+        ]
+
+        return Response({
+            "message": "부스 광고 배너 정보 조회 성공",
+            "data": booth_details,
         }, status=status.HTTP_200_OK)

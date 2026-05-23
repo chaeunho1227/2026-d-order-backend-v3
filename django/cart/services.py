@@ -129,7 +129,7 @@ def get_cart_item_image_url(item: CartItem) -> str | None:
 def build_cart_item_payload(item: CartItem) -> dict:
     if item.menu_id:
         name = item.menu.name
-        unit_price = int(item.menu.price)
+        unit_price = item.menu.price
         is_sold_out = item.menu.stock <= 0
     else:
         name = item.setmenu.name
@@ -319,11 +319,11 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
                     menu=menu,
                     setmenu=None,
                     quantity=quantity,
-                    price_at_cart=int(menu.price),
+                    price_at_cart=menu.price,
                 )
             else:
                 existing_item.quantity = new_qty
-                existing_item.price_at_cart = int(menu.price)
+                existing_item.price_at_cart = menu.price
                 existing_item.save(update_fields=["quantity", "price_at_cart"])
                 item = existing_item
 
@@ -348,11 +348,11 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
                     menu=menu,
                     setmenu=None,
                     quantity=quantity,
-                    price_at_cart=int(menu.price),
+                    price_at_cart=menu.price,
                 )
             else:
                 existing_item.quantity = new_qty
-                existing_item.price_at_cart = int(menu.price)
+                existing_item.price_at_cart = menu.price
                 existing_item.save(update_fields=["quantity", "price_at_cart"])
                 item = existing_item
 
@@ -435,11 +435,11 @@ def update_item_quantity(*, table_usage_id: int, cart_item_id: int, quantity: in
 
         if menu.category == Menu.Category.FEE:
             _validate_fee_quantity_policy(booth=booth, quantity=quantity)
-            item.price_at_cart = int(menu.price)
+            item.price_at_cart = menu.price
 
         else:
             _validate_cart_item_stock(cart=cart, target_menu=menu, new_direct_qty=quantity)
-            item.price_at_cart = int(menu.price)
+            item.price_at_cart = menu.price
 
     elif item.setmenu_id is not None:
         setmenu = get_object_or_404(

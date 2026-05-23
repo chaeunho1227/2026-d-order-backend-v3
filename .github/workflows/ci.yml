@@ -36,6 +36,8 @@ jobs:
     needs: check-labels
     if: needs.check-labels.outputs.test-all == 'true' || needs.check-labels.outputs.test-django == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -102,6 +104,8 @@ jobs:
     needs: check-labels
     if: needs.check-labels.outputs.test-all == 'true' || needs.check-labels.outputs.test-spring == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     services:
       postgres:
         image: postgres:15-alpine

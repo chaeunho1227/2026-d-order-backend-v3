@@ -209,7 +209,7 @@ class SetMenuDetailAPIView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
         
         return Response({
-            "message": "메뉴 삭제 성공",
+            "message": "세트메뉴 삭제 성공",
             "data": {"set_id": deleted_set_id}
         }, status=status.HTTP_200_OK)
 
@@ -235,7 +235,7 @@ class BoothMenuListAPIView(APIView):
             fee_item = {
                 "id": fee_menu.pk,
                 "name": fee_menu.name,
-                "price": int(fee_menu.price),
+                "price": fee_menu.price,
                 "category": fee_menu.category,
                 "description": fee_menu.description or "",
                 "image": fee_menu.image.url if fee_menu.image else None,
@@ -251,7 +251,7 @@ class BoothMenuListAPIView(APIView):
             data.append({
                 "id": menu.pk,
                 "name": menu.name,
-                "price": int(menu.price),
+                "price": menu.price,
                 "category": menu.category,
                 "description": menu.description or "",
                 "image": menu.image.url if menu.image else None,
@@ -260,20 +260,20 @@ class BoothMenuListAPIView(APIView):
                 "is_fixed": False,
                 "created_at": menu.created_at.isoformat() if hasattr(menu, 'created_at') else None
             })
-        set_menus = SetMenu.objects.filter(booth=booth).order_by("id")
+        set_menus = SetMenu.objects.filter(booth=booth).prefetch_related('items__menu').order_by("id")
         for setmenu in set_menus:
-            # 각 구성품별 (menu.stock // quantity) 계산
-            item_stocks = [item.menu.stock // item.quantity for item in setmenu.items.all() if item.menu.stock is not None and item.quantity > 0]
+            items = list(setmenu.items.all())
+            item_stocks = [item.menu.stock // item.quantity for item in items if item.menu.stock is not None and item.quantity > 0]
             min_stock = min(item_stocks) if item_stocks else 0
-            is_soldout = any(item.menu.stock == 0 for item in setmenu.items.all())
+            is_soldout = any(item.menu.stock == 0 for item in items)
             
             # set_items 구성
             set_items = []
-            for item in setmenu.items.all():
+            for item in items:
                 set_items.append({
                     "menu_id": item.menu.pk,
                     "quantity": item.quantity,
-                    "base_price": int(item.menu.price),
+                    "base_price": item.menu.price,
                     "stock": item.menu.stock
                 })
             
@@ -333,19 +333,19 @@ class UserMenuListAPIView(APIView):
             fee_data = [{
                 "id": fee_menu.pk,
                 "name": fee_menu.name,
-                "price": int(fee_menu.price),
+                "price": fee_menu.price,
                 "description": fee_menu.description or "",
                 "image": fee_menu.image.url if fee_menu.image else None,
                 "stock": fee_menu.stock,
                 "is_soldout": fee_menu.stock == 0
             }]
         # SET
-        set_menus = SetMenu.objects.filter(booth=booth).order_by('-price')
+        set_menus = SetMenu.objects.filter(booth=booth).prefetch_related('items__menu').order_by('-price')
         set_data = []
         for setmenu in set_menus:
-            origin_price = sum([item.menu.price * item.quantity for item in setmenu.items.all()])
-            discount_rate = round((origin_price - setmenu.price) / origin_price * 100, 1) if origin_price > 0 else 0.0
             items = list(setmenu.items.all())
+            origin_price = sum(item.menu.price * item.quantity for item in items)
+            discount_rate = round((origin_price - setmenu.price) / origin_price * 100, 1) if origin_price > 0 else 0.0
             is_soldout = any(item.menu.stock == 0 for item in items)
             min_stock = min((item.menu.stock // item.quantity for item in items), default=0)
             set_data.append({
@@ -367,7 +367,7 @@ class UserMenuListAPIView(APIView):
             menu_data.append({
                 "id": menu.pk,
                 "name": menu.name,
-                "price": int(menu.price),
+                "price": menu.price,
                 "description": menu.description or "",
                 "image": menu.image.url if menu.image else None,
                 "stock": menu.stock,
@@ -380,7 +380,7 @@ class UserMenuListAPIView(APIView):
             drink_data.append({
                 "id": drink.pk,
                 "name": drink.name,
-                "price": int(drink.price),
+                "price": drink.price,
                 "description": drink.description or "",
                 "image": drink.image.url if drink.image else None,
                 "stock": drink.stock,

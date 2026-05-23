@@ -14,19 +14,19 @@ from .serializers import (
 from table.models import Table, TableUsage
 
 
-class OrderCancelAPIView(APIView):
-    """POST /api/v3/django/order/cancel/ - 운영자용 (인증 필요)"""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        event_data = request.data
-        result = OrderService.handle_order_cancelled_event(event_data)
-        if result == "success":
-            return Response({"result": "success"}, status=status.HTTP_200_OK)
-        elif result == "cart_not_found":
-            return Response({"error": "cart_not_found"}, status=status.HTTP_404_NOT_FOUND)
-        else:
-            return Response({"result": result}, status=status.HTTP_400_BAD_REQUEST)
+# class OrderCancelAPIView(APIView):
+#     """POST /api/v3/django/order/cancel/ - 운영자용 (인증 필요)"""
+#     permission_classes = [IsAuthenticated]
+#
+#     def post(self, request):
+#         event_data = request.data
+#         result = OrderService.handle_order_cancelled_event(event_data)
+#         if result == "success":
+#             return Response({"result": "success"}, status=status.HTTP_200_OK)
+#         elif result == "cart_not_found":
+#             return Response({"error": "cart_not_found"}, status=status.HTTP_404_NOT_FOUND)
+#         else:
+#             return Response({"result": result}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class OrderItemStatusUpdateAPIView(APIView):
