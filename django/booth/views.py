@@ -4,7 +4,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.views import APIView
 from rest_framework import status
 from rest_framework.response import Response
-from booth.services import BoothService
+from booth.services import BoothService, BoothStatisticsService
 from booth.models import Booth
 from booth.serializers import BoothSerializer, BoothUpdateSerializer
 
@@ -107,6 +107,19 @@ class BoothNameAPIView(APIView):
             "data" : {
                 "booth_name" : booth.name,
             }
+        }, status=status.HTTP_200_OK)
+
+
+class BoothStatisticsAPIView(APIView):
+    """부스 통계 조회 API"""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        booth = request.user.booth
+        data = BoothStatisticsService.get_statistics(booth)
+        return Response({
+            "message": "통계 데이터를 불러왔습니다.",
+            "data": data,
         }, status=status.HTTP_200_OK)
 
 
