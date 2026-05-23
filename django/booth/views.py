@@ -128,7 +128,10 @@ class BoothAdBannerAPIView(APIView):
             .filter(operate_dates__contains=[date_str])
             .exclude(location__isnull=True)
             .exclude(location='')
-            .annotate(remaining_table=Count('tables', filter=Q(tables__status='AVAILABLE')))
+            .annotate(
+                total_table=Count('tables'),
+                remaining_table=Count('tables', filter=Q(tables__status='AVAILABLE')),
+            )
             .order_by('pk')
         )
 
@@ -136,6 +139,7 @@ class BoothAdBannerAPIView(APIView):
             {
                 "boothName": booth.name,
                 "location": booth.location or "",
+                "totalTable": booth.total_table,
                 "remainingTable": booth.remaining_table,
             }
             for booth in booths
