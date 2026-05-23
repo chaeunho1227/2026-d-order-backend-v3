@@ -1,3 +1,6 @@
+import asyncio
+import logging
+
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.db.models import F, Value, CharField, Prefetch
@@ -6,7 +9,6 @@ from django.utils import timezone
 from asgiref.sync import sync_to_async
 from order.models import Order, OrderItem
 from core.mixins import KoreanAsyncJsonMixin
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +31,14 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
       ⑨ ADMIN_TABLE_MERGE     – 테이블 병합 (주문 갱신)
     """
 
+    # Cloudflare Free WebSocket idle 100s 한계보다 짧게 잡아 강제 종료 방지.
+    HEARTBEAT_INTERVAL_SECONDS = 25
+
     # ───────────────────────────────────────────
     # 연결 / 해제 / 수신
     # ───────────────────────────────────────────
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -45,32 +51,51 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         await self.send_order_snapshot()
         await self.send_menu_aggregation()
 
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
     async def _authenticate(self):
         """JWT 쿠키 인증 → booth_id 반환, 실패 시 None"""
         user = self.scope.get("user")
 
-        logger.warning(f"🔐 [Order WS] 인증 시작 - user={user}, is_anonymous={isinstance(user, AnonymousUser)}")
+        logger.debug(f"[Order WS] 인증 시작 - user={user}, is_anonymous={isinstance(user, AnonymousUser)}")
 
         if not user or isinstance(user, AnonymousUser):
-            logger.warning(f"❌ [Order WS] 익명 사용자 - 연결 거부")
+            logger.warning("[Order WS] 익명 사용자 - 연결 거부")
             await self.close(code=4001)
             return None
 
         try:
             booth = await sync_to_async(lambda: user.booth)()
-            logger.warning(f"✅ [Order WS] 인증 성공 - booth_id={booth.pk}, booth_name={booth.name}")
+            logger.info(f"[Order WS] 인증 성공 - booth_id={booth.pk}, booth_name={booth.name}")
             return booth.pk
         except Exception as e:
-            logger.warning(f"❌ [Order WS] Booth 조회 실패 - user={user.username}, error={e}")
+            logger.error(f"[Order WS] Booth 조회 실패 - user={user.username}, error={e}")
             await self.close(code=4003)
             return None
 
     async def disconnect(self, close_code):
+        if getattr(self, "heartbeat_task", None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f"[Order WS] 연결 해제: {self.group_name} (code: {close_code})")
 
     async def receive_json(self, content):
+        message_type = content.get("type") if isinstance(content, dict) else None
+
+        if message_type == "PING":
+            await self.send_json({
+                "type": "PONG",
+                "timestamp": timezone.localtime().isoformat(),
+                "message": "heartbeat",
+                "data": None,
+            })
+            return
+
+        if message_type == "PONG":
+            return
+
         await self.send_json({
             "type": "error",
             "timestamp": timezone.now().isoformat(),
@@ -78,14 +103,31 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
             "data": None,
         })
 
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    "type": "PONG",
+                    "timestamp": timezone.localtime().isoformat(),
+                    "message": "heartbeat",
+                    "data": None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(
+                f"[Order WS] heartbeat failed: booth_id={getattr(self, 'booth_id', None)}, error={e}"
+            )
+
     # ───────────────────────────────────────────
     # ① ADMIN_ORDER_SNAPSHOT
     # ───────────────────────────────────────────
     async def send_order_snapshot(self):
         """현재 부스의 PAID 주문을 created_at 오름차순으로 직렬화하여 전송"""
-        logger.warning(f"📸 [Order WS] SNAP 시작 - booth_id={self.booth_id}")
+        logger.debug(f"[Order WS] SNAP 시작 - booth_id={self.booth_id}")
         orders = await self._get_active_orders()
-        logger.warning(f"📸 [Order WS] 조회됨: {len(orders)}개 주문")
+        logger.debug(f"[Order WS] SNAP 조회됨: {len(orders)}개 주문")
         serialized_orders = []
         for order in orders:
             serialized_orders.append(await self._serialize_order(order))
@@ -111,7 +153,7 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         """
         data = event.get("data", {})
         order_id = data.get("order_id")
-        logger.warning(f"🔥 [Order WS] 새 주문 수신 - order_id={order_id}")
+        logger.info(f"[Order WS] 새 주문 수신 - order_id={order_id}")
 
         if order_id:
             order = await sync_to_async(
@@ -121,24 +163,26 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
                 .first()
             )()
             if order:
-                logger.warning(f"✅ [Order WS] 주문 조회 성공 - order_id={order_id}")
+                logger.debug(f"[Order WS] 주문 조회 성공 - order_id={order_id}")
                 serialized = await self._serialize_order(order)
                 total_sales = await self._get_total_sales()
-                await self.send_json({
-                    "type": "ADMIN_NEW_ORDER",
-                    "timestamp": timezone.localtime().isoformat(),
-                    "data": {
-                        "total_sales": total_sales,
-                        "orders": [serialized],
-                    },
-                })
+                # FEE only 주문은 대시보드에 표시하지 않음
+                if serialized["items"]:
+                    await self.send_json({
+                        "type": "ADMIN_NEW_ORDER",
+                        "timestamp": timezone.localtime().isoformat(),
+                        "data": {
+                            "total_sales": total_sales,
+                            "orders": [serialized],
+                        },
+                    })
                 await self.send_menu_aggregation()
                 return
             else:
-                logger.warning(f"❌ [Order WS] 주문 조회 실패 - order_id={order_id}")
+                logger.warning(f"[Order WS] 주문 조회 실패 - order_id={order_id}")
 
         # order_id 가 없거나 조회 실패 시 빈 배열
-        logger.warning(f"❌ [Order WS] 빈 배열 전송 - order_id={order_id}")
+        logger.warning(f"[Order WS] 빈 배열 전송 - order_id={order_id}")
         total_sales = await self._get_total_sales()
         await self.send_json({
             "type": "ADMIN_NEW_ORDER",
@@ -203,13 +247,13 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
     # ───────────────────────────────────────────
     async def send_menu_aggregation(self):
         """
-        현재 부스의 조리/서빙 대상 메뉴별 수량 집계.
-        status가 COOKING, COOKED, SERVING인 것만 대상.
+        현재 부스의 조리 중 메뉴별 수량 집계.
+        status가 COOKING인 것만 대상 (COOKED 이후는 집계 제외).
         음식(MENU) / 음료(DRINK)로 분류, 수량 내림차순 → 이름 오름차순.
         """
         aggregation = await self._get_menu_aggregation()
-        logger.warning(
-            "📊 [Order WS] MENU_AGGREGATION 전송 - booth_id=%s, food=%s, drink=%s",
+        logger.debug(
+            "[Order WS] MENU_AGGREGATION 전송 - booth_id=%s, food=%s, drink=%s",
             self.booth_id,
             len(aggregation.get("food_summary", [])),
             len(aggregation.get("beverage_summary", [])),
@@ -221,8 +265,18 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         })
 
     async def admin_menu_aggregation(self, event):
-        """group_send 핸들러: 외부에서 집계 갱신 트리거 시"""
-        await self.send_menu_aggregation()
+        """group_send 핸들러: 서비스 레이어에서 계산된 집계를 수신"""
+        data = event.get("data")
+        if data:
+            # 서비스 레이어에서 이미 계산된 결과 → DB 재조회 없이 전송
+            await self.send_json({
+                "type": "MENU_AGGREGATION",
+                "timestamp": timezone.localtime().isoformat(),
+                "data": data,
+            })
+        else:
+            # data 없는 레거시 이벤트 호환
+            await self.send_menu_aggregation()
 
     # ───────────────────────────────────────────
     # Private: DB 조회 / 직렬화
@@ -230,80 +284,32 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
     async def _get_active_orders(self):
         """해당 부스의 PAID 상태 주문을 오래된 순으로 조회 (종료된 테이블 제외)"""
         def _query():
-            logger.warning(f"🔍 [Order WS] DB 조회 - booth_id={self.booth_id}")
+            logger.debug(f"[Order WS] DB 조회 - booth_id={self.booth_id}")
+            from django.db.models import Q
             qs = Order.objects.filter(
                 order_status="PAID",
                 table_usage__table__booth_id=self.booth_id,
-                table_usage__ended_at__isnull=True,  # ← 테이블 사용 중인 것만 (종료된 테이블 제외)
-            ).select_related("table_usage__table").order_by("created_at")
-            count = qs.count()
-            logger.warning(f"🔍 [Order WS] DB 결과: {count}개 주문")
-            return list(qs)
+                table_usage__ended_at__isnull=True,
+                # FEE 외 아이템이 하나라도 있는 주문만 (FEE only 주문 제외)
+                items__parent__isnull=True,
+            ).filter(
+                Q(items__setmenu__isnull=False) |
+                Q(items__menu__category__in=["MENU", "DRINK"])
+            ).distinct().select_related("table_usage__table").order_by("created_at")
+            result = list(qs)
+            logger.debug(f"[Order WS] DB 결과: {len(result)}개 주문")
+            return result
         
         return await sync_to_async(_query)()
 
     async def _get_menu_aggregation(self):
         """
         DB에서 메뉴별 수량 집계 조회.
-        리프 아이템만 대상 (세트메뉴 부모 제외, 자식 OrderItem + 일반 메뉴).
-        조리중(COOKING) 상태인 것만 대상. 조리완료되면 집계에서 제외됨.
+        최초 연결 시 스냅샷 전송에만 사용.
+        이벤트 발생 시에는 서비스 레이어에서 계산된 결과를 group_send로 수신.
         """
-        active_statuses = ["COOKING", "cooking"]  # 대소문자 혼용 대응
-
-        def _query():
-            # 리프 아이템만 집계: 메뉴가 있는 아이템들 (세트메뉴 부모 제외, 자식 + 일반 메뉴)
-            # FEE 카테고리는 제외 (테이블 이용료는 메뉴 집계에서 제외)
-            qs = (
-                OrderItem.objects
-                .filter(
-                    order__order_status="PAID",
-                    order__table_usage__table__booth_id=self.booth_id,
-                    order__table_usage__ended_at__isnull=True,  # 초기화된 테이블 제외
-                    status__in=active_statuses,
-                    menu__isnull=False,  # 세트메뉴 부모(menu=None) 자동 제외, 자식·일반 포함
-                )
-                .exclude(menu__category="FEE")
-                .select_related("menu")
-            )
-
-            qs_count = qs.count()
-
-            food_map = {}
-            drink_map = {}
-
-            for item in qs:
-                # 일반 메뉴 또는 세트메뉴 구성품의 메뉴 이름
-                name = item.menu.name
-                category = item.menu.category
-                target = drink_map if category == "DRINK" else food_map
-                target[name] = target.get(name, 0) + item.quantity
-
-            def sort_key(pair):
-                return (-pair[1], pair[0])
-
-            food_summary = [
-                {"menu_name": k, "total_quantity": v}
-                for k, v in sorted(food_map.items(), key=sort_key)
-            ]
-            beverage_summary = [
-                {"menu_name": k, "total_quantity": v}
-                for k, v in sorted(drink_map.items(), key=sort_key)
-            ]
-
-            logger.warning(
-                "📊 [Order WS] MENU_AGGREGATION 조회 - booth_id=%s, qs=%s, food=%s, drink=%s",
-                self.booth_id,
-                qs_count,
-                food_summary,
-                beverage_summary,
-            )
-
-            return {
-                "food_summary": food_summary,
-                "beverage_summary": beverage_summary,
-            }
-
-        return await sync_to_async(_query)()
+        from order.cache import query_menu_aggregation
+        return await sync_to_async(query_menu_aggregation)(self.booth_id)
 
     async def _get_total_sales(self):
         """오늘 매출 (캐시 우선, 미스 시 DB 초기화)"""
@@ -324,11 +330,11 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         """테이블 초기화 이벤트 수신 → 초기화된 테이블을 제외한 현재 주문 목록 재전송"""
         data = event.get("data", {})
         table_nums = data.get("table_nums", [])
-        logger.warning(f"🔄 [Order WS] 테이블 초기화 - table_nums={table_nums}")
-        
+        logger.info(f"[Order WS] 테이블 초기화 - table_nums={table_nums}")
+
         # 현재 활성 주문 목록 재조회 (ended_at이 NULL인 테이블만)
         orders = await self._get_active_orders()
-        logger.warning(f"🔄 [Order WS] 재조회됨: {len(orders)}개 주문")
+        logger.debug(f"[Order WS] 테이블 초기화 후 재조회됨: {len(orders)}개 주문")
         
         serialized_orders = []
         for order in orders:
@@ -357,11 +363,11 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         data = event.get("data", {})
         table_nums = data.get("table_nums", [])
         representative_table = data.get("representative_table")
-        logger.warning(f"🔗 [Order WS] 테이블 병합 - table_nums={table_nums}, rep={representative_table}")
-        
+        logger.info(f"[Order WS] 테이블 병합 - table_nums={table_nums}, rep={representative_table}")
+
         # 현재 활성 주문 목록 재조회 (ended_at이 NULL인 테이블만)
         orders = await self._get_active_orders()
-        logger.warning(f"🔗 [Order WS] 재조회됨: {len(orders)}개 주문")
+        logger.debug(f"[Order WS] 테이블 병합 후 재조회됨: {len(orders)}개 주문")
         
         serialized_orders = []
         for order in orders:
@@ -409,13 +415,13 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
                 if item.setmenu_id:
                     # 세트메뉴 → 자식 OrderItem 개별 직렬화
                     set_menu_name = item.setmenu.name
-                    set_menu_image = item.setmenu.image.url if item.setmenu and item.setmenu.image else None
                     for child in item.children.all():
                         child_menu_name = child.menu.name if child.menu else "알 수 없음"
+                        child_image = child.menu.image.url if child.menu and child.menu.image else None
                         items.append({
                             "order_item_id": child.id,
                             "menu_name": child_menu_name,
-                            "image": set_menu_image,
+                            "image": child_image,
                             "quantity": child.quantity,
                             "fixed_price": item.fixed_price,
                             "item_total_price": item.fixed_price * item.quantity,
@@ -469,7 +475,10 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
       ② TOTAL_SALES_UPDATE    – 주문 생성/취소 시 갱신
     """
 
+    HEARTBEAT_INTERVAL_SECONDS = 25
+
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -480,6 +489,8 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
 
         logger.info(f"[Sales WS] 연결됨: {self.group_name}")
         await self._send_sales_snapshot()
+
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def _authenticate(self):
         user = self.scope.get("user")
@@ -495,15 +506,49 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
             return None
 
     async def disconnect(self, close_code):
+        if getattr(self, "heartbeat_task", None):
+            self.heartbeat_task.cancel()
+
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f"[Sales WS] 연결 해제: {self.group_name} (code: {close_code})")
 
     async def receive_json(self, content):
+        message_type = content.get("type") if isinstance(content, dict) else None
+
+        if message_type == "PING":
+            await self.send_json({
+                "type": "PONG",
+                "timestamp": timezone.localtime().isoformat(),
+                "message": "heartbeat",
+                "data": None,
+            })
+            return
+
+        if message_type == "PONG":
+            return
+
         await self.send_json({
             "type": "error",
             "message": "메세지 수신을 지원하지 않습니다.",
         })
+
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    "type": "PONG",
+                    "timestamp": timezone.localtime().isoformat(),
+                    "message": "heartbeat",
+                    "data": None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(
+                f"[Sales WS] heartbeat failed: booth_id={getattr(self, 'booth_id', None)}, error={e}"
+            )
 
     # ① TOTAL_SALES_SNAPSHOT
     async def _send_sales_snapshot(self):
@@ -548,6 +593,12 @@ class BoothSalesConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
 
     async def admin_menu_aggregation(self, event):
         # BoothSalesConsumer는 메뉴 집계를 다루지 않음
+        pass
+
+    async def admin_table_reset(self, event):
+        pass
+
+    async def admin_table_merge(self, event):
         pass
 
     async def _get_today_revenue(self):

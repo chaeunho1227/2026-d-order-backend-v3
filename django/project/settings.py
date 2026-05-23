@@ -110,6 +110,7 @@ MIDDLEWARE = [
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'authentication.middleware.JWTCookieMiddleware',   # 쿠키 → 헤더 변환
+    'authentication.middleware.StaleCookiePurgeMiddleware',  # 옛 도메인 잔재 쿠키 일소
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
@@ -173,6 +174,8 @@ DATABASES = {
         'PASSWORD': env('DB_PASSWORD', default=''),
         'HOST': env('DB_HOST', default=''),
         'PORT': env('DB_PORT', default=''),
+        'CONN_MAX_AGE': env.int('DB_CONN_MAX_AGE', default=0),
+        'CONN_HEALTH_CHECKS': True,
     }
 }
 
@@ -233,32 +236,11 @@ SIMPLE_JWT = {
     'AUTH_COOKIE_SECURE': not IS_LOCAL,  # local 제외 HTTPS 환경에서 Secure
     'AUTH_COOKIE_HTTP_ONLY': True,
     'AUTH_COOKIE_SAMESITE': 'None' if IS_DEVELOPMENT else 'Lax',  # dev: cross-origin 쿠키 전송 허용
-    'AUTH_COOKIE_DOMAIN': None if IS_LOCAL else '.dorder-api.shop',
+    'AUTH_COOKIE_DOMAIN': None,  # host-only: 서브도메인 간 쿠키 누적/충돌 방지
 }
 
 # Logging 설정
-_file_handlers = {} if IS_LOCAL else {
-    'file': {
-        'class': 'logging.handlers.RotatingFileHandler',
-        'filename': '/app/logs/django.log',
-        'maxBytes': 1024 * 1024 * 10,  # 10MB
-        'backupCount': 5,
-        'formatter': 'verbose',
-        'encoding': 'utf-8',
-        'level': 'DEBUG',
-    },
-    'file_error': {
-        'class': 'logging.handlers.RotatingFileHandler',
-        'filename': '/app/logs/error.log',
-        'maxBytes': 1024 * 1024 * 5,   # 5MB
-        'backupCount': 3,
-        'formatter': 'verbose',
-        'encoding': 'utf-8',
-        'level': 'ERROR',
-    },
-}
-_file_handler = [] if IS_LOCAL else ['file']
-_file_error_handler = [] if IS_LOCAL else ['file_error']
+_app_log_level = 'DEBUG' if not IS_PRODUCTION else 'INFO'
 
 LOGGING = {
     'version': 1,
@@ -269,10 +251,6 @@ LOGGING = {
             'format': '{levelname} {asctime} {module} {process:d} {thread:d} {message}',
             'style': '{',
         },
-        'simple': {
-            'format': '{levelname} {message}',
-            'style': '{',
-        },
     },
 
     'handlers': {
@@ -280,7 +258,6 @@ LOGGING = {
             'class': 'logging.StreamHandler',
             'formatter': 'verbose',
         },
-        **_file_handlers,
     },
 
     'root': {
@@ -289,38 +266,43 @@ LOGGING = {
     },
     'loggers': {
         'django': {
-            'handlers': ['console'] + _file_handler,
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'django.request': {
-            'handlers': ['console'] + _file_error_handler,
+            'handlers': ['console'],
             'level': 'WARNING',  # 4xx=WARNING, 5xx=ERROR 자동 분류
             'propagate': False,  # django logger 중복 방지
         },
         'channels': {
-            'handlers': ['console'] + _file_handler,
+            'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
         },
         'authentication': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': ['console'],
+            'level': _app_log_level,
             'propagate': False,
         },
         'booth': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': ['console'],
+            'level': _app_log_level,
             'propagate': False,
         },
         'core': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': ['console'],
+            'level': _app_log_level,
             'propagate': False,
         },
         'order': {
-            'handlers': ['console'] + _file_handler,
-            'level': 'DEBUG',
+            'handlers': ['console'],
+            'level': _app_log_level,
+            'propagate': False,
+        },
+        'table': {
+            'handlers': ['console'],
+            'level': _app_log_level,
             'propagate': False,
         },
     },
@@ -349,7 +331,12 @@ if not IS_LOCAL:
     AWS_STORAGE_BUCKET_NAME = env('AWS_STORAGE_BUCKET_NAME')
     AWS_S3_REGION_NAME = env('AWS_S3_REGION_NAME')
     
-    AWS_S3_CUSTOM_DOMAIN = f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com'
+    # Cloudflare 도입 시 prod.dorder-api.shop 같은 자체 도메인으로 오버라이드.
+    # 미설정 시 기존 S3 직빙 도메인을 그대로 사용.
+    AWS_S3_CUSTOM_DOMAIN = env(
+        'AWS_S3_CUSTOM_DOMAIN',
+        default=f'{AWS_STORAGE_BUCKET_NAME}.s3.{AWS_S3_REGION_NAME}.amazonaws.com',
+    )
     AWS_S3_OBJECT_PARAMETERS = {
         'CacheControl': 'max-age=86400',
     }
@@ -410,6 +397,11 @@ def get_cors_origins():
 
 CORS_ALLOWED_ORIGINS = get_cors_origins()
 
+if not IS_PRODUCTION:
+    CORS_ALLOWED_ORIGIN_REGEXES = [
+        r"https://.*\.netlify\.app",
+    ]
+
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'booth-id',
 ]
@@ -425,13 +417,13 @@ SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 CSRF_COOKIE_NAME = 'csrftoken'              # 쿠키 이름
 CSRF_COOKIE_SECURE = env.bool('CSRF_COOKIE_SECURE', default=not IS_LOCAL)
 CSRF_COOKIE_HTTPONLY = False                # JavaScript에서 접근 가능 (React에서 필요)
-CSRF_COOKIE_SAMESITE = 'Lax'
-CSRF_COOKIE_DOMAIN = None if IS_LOCAL else '.dorder-api.shop'
+CSRF_COOKIE_SAMESITE = 'None' if IS_DEVELOPMENT else 'Lax'  # dev: localhost/netlify cross-site 호출 허용
+CSRF_COOKIE_DOMAIN = None  # host-only: 서브도메인 간 쿠키 누적/충돌 방지
 
 SESSION_COOKIE_SECURE = env.bool('SESSION_COOKIE_SECURE', default=IS_PRODUCTION)
 SESSION_COOKIE_HTTPONLY = env.bool('SESSION_COOKIE_HTTPONLY', default=True)
 SESSION_COOKIE_SAMESITE = 'Lax'
-SESSION_COOKIE_DOMAIN = None if IS_LOCAL else '.dorder-api.shop'
+SESSION_COOKIE_DOMAIN = None  # host-only: 서브도메인 간 쿠키 누적/충돌 방지
 
 
 # CSRF 설정

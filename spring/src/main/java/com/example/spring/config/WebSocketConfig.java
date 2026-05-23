@@ -30,9 +30,10 @@ public class WebSocketConfig implements WebSocketConfigurer {
                         "https://localhost:5174",
                         "https://dev.dorder-api.shop",
                         "http://dev.dorder-api.shop",
-                        "https://*.dorder-api.shop"
+                        "https://*.dorder-api.shop",
+                        "https://*.netlify.app"
                 )
-                .addInterceptors(new HttpSessionHandshakeInterceptor());
+                .addInterceptors(staffCallHandshakeInterceptor, new HttpSessionHandshakeInterceptor());
 
         registry.addHandler(staffCallWebSocketHandler, "/ws/server/staffcall")
                 .setAllowedOriginPatterns(
@@ -42,7 +43,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
                         "https://localhost:5174",
                         "https://dev.dorder-api.shop",
                         "http://dev.dorder-api.shop",
-                        "https://*.dorder-api.shop"
+                        "https://*.dorder-api.shop",
+                        "https://*.netlify.app"
                 )
                 .addInterceptors(staffCallHandshakeInterceptor, new HttpSessionHandshakeInterceptor());
 
@@ -54,7 +56,8 @@ public class WebSocketConfig implements WebSocketConfigurer {
                         "https://localhost:5174",
                         "https://dev.dorder-api.shop",
                         "http://dev.dorder-api.shop",
-                        "https://*.dorder-api.shop"
+                        "https://*.dorder-api.shop",
+                        "https://*.netlify.app"
                 )
                 .addInterceptors(new HttpSessionHandshakeInterceptor());
     }

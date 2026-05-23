@@ -82,7 +82,9 @@ public class ServingTaskService {
                 if (item == null || item.getId() == null || item.getName() == null) {
                     continue;
                 }
-                menus.add(new ServingMenuFilterOption(item.getId(), item.getName()));
+                String category = item.getCategory();
+                boolean isSetMenu = category != null && "SET".equalsIgnoreCase(category);
+                menus.add(new ServingMenuFilterOption(item.getId(), item.getName(), category, isSetMenu));
             }
         }
 
@@ -184,7 +186,7 @@ public class ServingTaskService {
             task.acceptServing();
 
             publishToDjango(boothId, "serving", task.getOrderItemId());
-            webSocketHandler.broadcastEvent("CATCH_CALL", ServingTaskResponse.from(task));
+            webSocketHandler.broadcastEvent(boothId, "CATCH_CALL", ServingTaskResponse.from(task));
 
         } finally {
             redisTemplate.delete(lockKey);
@@ -203,7 +205,7 @@ public class ServingTaskService {
         task.completeServing();
 
         publishToDjango(boothId, "served", task.getOrderItemId());
-        webSocketHandler.broadcastEvent("COMPLETE_CALL", ServingTaskResponse.from(task));
+        webSocketHandler.broadcastEvent(boothId, "COMPLETE_CALL", ServingTaskResponse.from(task));
     }
 
     @Transactional
@@ -218,7 +220,7 @@ public class ServingTaskService {
         task.cancelServing();
 
         publishToDjango(boothId, "cooked", task.getOrderItemId());
-        webSocketHandler.broadcastEvent("CANCEL_CALL", ServingTaskResponse.from(task));
+        webSocketHandler.broadcastEvent(boothId, "CANCEL_CALL", ServingTaskResponse.from(task));
     }
 
     @Transactional
@@ -248,7 +250,7 @@ public class ServingTaskService {
 
         servingTaskRepository.save(newTask);
 
-        webSocketHandler.broadcastEvent("NEW_CALL", ServingTaskResponse.from(newTask));
+        webSocketHandler.broadcastEvent(boothId, "NEW_CALL", ServingTaskResponse.from(newTask));
         log.info("[새 서빙 요청 생성 및 브로드캐스트] boothId={}, orderItemId={}", boothId, orderItemId);
     }
 
@@ -261,6 +263,7 @@ public class ServingTaskService {
         );
         if (deletedCount > 0) {
             webSocketHandler.broadcastEvent(
+                    boothId,
                     "REMOVE_CALL",
                     buildRemoveCallPayload(boothId, reason, deletedCount, orderItemId, null)
             );
@@ -277,6 +280,7 @@ public class ServingTaskService {
         );
         if (deletedCount > 0) {
             webSocketHandler.broadcastEvent(
+                    boothId,
                     "REMOVE_CALL",
                     buildRemoveCallPayload(boothId, reason, deletedCount, null, tableNumber)
             );

@@ -148,15 +148,27 @@ class BoothService:
         from order.models import Order
         Order.objects.filter(table_usage__table__booth=booth).delete()
 
-        from order.cache import invalidate_today_revenue
-        invalidate_today_revenue(booth.pk)
-
         # 4. 모든 TableUsage 삭제
         #    Cart.table_usage가 CASCADE이므로 Cart도 함께 삭제됨
+        #    CartCouponApply도 Cart → CASCADE로 함께 삭제됨
         deleted_count, _ = TableUsage.objects.filter(table__booth=booth).delete()
 
-        # 5. 총매출 0 초기화 WebSocket 전송 (트랜잭션 커밋 후)
+        # 5. 이 부스의 쿠폰 코드 사용 이력 초기화
+        #    결제 시 CouponCode.used_at이 설정되는데, 포맷 시 주문/카트는
+        #    CASCADE로 삭제되지만 CouponCode.used_at은 직접 초기화해야 함
+        from coupon.models import CouponCode
+        CouponCode.objects.filter(
+            coupon__booth=booth, used_at__isnull=False
+        ).update(used_at=None)
+
+        # 6. 커밋 후: 매출 캐시 무효화 + 총매출 0 WebSocket 전송
         def _send_ws_after_commit():
+            try:
+                from order.cache import invalidate_today_revenue
+                invalidate_today_revenue(booth.pk)
+            except Exception:
+                logger.exception("[부스 초기화] 매출 캐시 무효화 실패")
+
             try:
                 from channels.layers import get_channel_layer
                 from asgiref.sync import async_to_sync
@@ -166,9 +178,8 @@ class BoothService:
                     group_name,
                     {"type": "total_sales_update", "data": {"today_revenue": 0}}
                 )
-            except Exception as e:
-                import logging
-                logging.getLogger(__name__).error(f"[부스 초기화] 총매출 WebSocket 전송 실패: {e}")
+            except Exception:
+                logger.exception("[부스 초기화] 총매출 WebSocket 전송 실패")
 
         transaction.on_commit(_send_ws_after_commit)
 

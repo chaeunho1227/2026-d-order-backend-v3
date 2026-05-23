@@ -16,6 +16,16 @@ spring:
         dialect: org.hibernate.dialect.PostgreSQLDialect
 
 # ==================================================================
+# 로깅 설정
+# ==================================================================
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} %highlight(%-5level) [%15.15thread] %cyan(%-40.40logger{39}) : %msg%n"
+  level:
+    root: INFO
+    com.example.spring: DEBUG
+
+# ==================================================================
 # JWT 설정 (Django에서 발급한 토큰 검증용)
 # ==================================================================
 jwt:
@@ -74,8 +84,10 @@ spring:
     activate:
       on-profile: dev
   datasource:
-    # Docker 네트워크 내에서는 서비스 이름(postgres)으로 접속
-    url: jdbc:postgresql://postgres:5432/${POSTGRES_DB:d_order}
+    # Docker 네트워크 내에서는 pgbouncer(6432) 를 거쳐 PG 에 접속 (transaction pooling).
+    # prepareThreshold=0 필수 — transaction pooling 에서 server-side prepared statement
+    # 가 다른 백엔드 connection 으로 redispatch 되면 "prepared statement does not exist".
+    url: jdbc:postgresql://${DB_HOST:pgbouncer}:6432/${POSTGRES_DB:d_order}?prepareThreshold=0
     # Spring 전용 유저 사용 (init-db.sh에서 생성됨)
     # 보안: Django와 분리된 권한 관리
     username: ${SPRING_DB_USER:spring_user}
@@ -104,6 +116,11 @@ spring:
       port: ${REDIS_PORT:6379}
       password: ${REDIS_PASSWORD:}
 
+jwt:
+  cookie:
+    secure: true
+    same-site: 'None' # Netlify 등 외부 도메인 프론트에서 cross-site 쿠키 허용
+
 ---
 # ==================================================================
 # prod 환경 전용 설정 (Docker 컨테이너용)
@@ -115,7 +132,8 @@ spring:
     activate:
       on-profile: prod
   datasource:
-    url: jdbc:postgresql://${DB_HOST}:5432/${POSTGRES_DB:d_order}
+    # DB_HOST 는 compose 에서 pgbouncer 로 주입. prepareThreshold=0 필수.
+    url: jdbc:postgresql://${DB_HOST}:6432/${POSTGRES_DB:d_order}?prepareThreshold=0
     username: ${SPRING_DB_USER}
     password: ${SPRING_DB_PASSWORD}
     driver-class-name: org.postgresql.Driver
@@ -127,6 +145,9 @@ spring:
       max-lifetime: 1800000
   jpa:
     hibernate:
+      # 운영 스키마는 Django migration 이 관리. 단 Spring 측 모델 변경 가능성을 위해 update 유지.
+      # validate 는 Spring 엔티티의 FK 컬럼 매핑(_id 접미사 누락) 정리가 끝난 뒤 재도입 예정 (#393).
+      # 매 부팅 시 권한 부족 ALTER WARN 누적은 감수.
       ddl-auto: update
     properties:
       hibernate:
@@ -141,8 +162,8 @@ spring:
 jwt:
   cookie:
     secure: true
-    same-site: 'None' # Django와 동일 (Safari/iOS WebSocket 쿠키 누락 방지) - 따옴표 필수 (YAML에서 None은 null로 파싱됨)
-    domain: .dorder-api.shop # 모든 서브도메인 쿠키 공유
+    same-site: "None"    # Django와 동일 (Safari/iOS WebSocket 쿠키 누락 방지) - 따옴표 필수 (YAML에서 None은 null로 파싱됨)
+    domain: ""           # host-only: Domain attr 생략하여 서브도메인 간 쿠키 누적/충돌 방지 (CookieUtil에서 빈값이면 .domain() 호출 생략)
 
 # 서버 설정
 server:

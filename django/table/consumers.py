@@ -1,9 +1,11 @@
+import asyncio
+import logging
+
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 from django.contrib.auth.models import AnonymousUser
 from django.utils import timezone
 from asgiref.sync import sync_to_async
 from .ws_handlers import TableMixin, TableDetailMixin
-import logging
 
 from core.mixins import KoreanAsyncJsonMixin
 logger = logging.getLogger(__name__)
@@ -12,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 class BaseTableConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
     """테이블 Consumer 공통 기반"""
+
+    # Cloudflare Free WebSocket idle 100s 한계보다 짧게 잡아 강제 종료 방지.
+    HEARTBEAT_INTERVAL_SECONDS = 25
 
     async def _authenticate(self):
         """WebSocket 연결 처리"""
@@ -26,17 +31,58 @@ class BaseTableConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
             booth = await sync_to_async(lambda: user.booth)()
             return booth.pk
         except Exception as e:
-            logger.warning(f"User {user.username} has no booth: {e}")
+            logger.exception("User %s has no booth", user.username)
             await self.close(code=4003)
             return None
 
     async def receive_json(self, content):
+        message_type = content.get('type') if isinstance(content, dict) else None
+
+        if message_type == 'PING':
+            await self.send_json({
+                'type': 'PONG',
+                'timestamp': timezone.localtime().isoformat(),
+                'message': 'heartbeat',
+                'data': None,
+            })
+            return
+
+        if message_type == 'PONG':
+            return
+
         await self.send_json({
             'type': 'error',
             'timestamp': timezone.now().isoformat(),
             'message': '메세지 안 받아요. REST API를 사용하세요.',
             'data': None
         })
+
+    def _start_heartbeat(self):
+        self.heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    def _stop_heartbeat(self):
+        task = getattr(self, 'heartbeat_task', None)
+        if task:
+            task.cancel()
+
+    async def _heartbeat_loop(self):
+        try:
+            while True:
+                await asyncio.sleep(self.HEARTBEAT_INTERVAL_SECONDS)
+                await self.send_json({
+                    'type': 'PONG',
+                    'timestamp': timezone.localtime().isoformat(),
+                    'message': 'heartbeat',
+                    'data': None,
+                })
+        except asyncio.CancelledError:
+            return
+        except Exception as e:
+            logger.warning(
+                "Table WS heartbeat failed: group=%s, error=%s",
+                getattr(self, 'group_name', None),
+                e,
+            )
 
 
 class TableConsumer(TableMixin, BaseTableConsumer):
@@ -46,6 +92,7 @@ class TableConsumer(TableMixin, BaseTableConsumer):
     """
 
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -66,7 +113,10 @@ class TableConsumer(TableMixin, BaseTableConsumer):
             }
         })
 
+        self._start_heartbeat()
+
     async def disconnect(self, close_code):
+        self._stop_heartbeat()
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f'WebSocket 연결 해제: {self.group_name} (code: {close_code})')
@@ -79,6 +129,7 @@ class TableDetailConsumer(TableDetailMixin, BaseTableConsumer):
     """
 
     async def connect(self):
+        self.heartbeat_task = None
         self.booth_id = await self._authenticate()
         if self.booth_id is None:
             return
@@ -101,7 +152,10 @@ class TableDetailConsumer(TableDetailMixin, BaseTableConsumer):
             }
         })
 
+        self._start_heartbeat()
+
     async def disconnect(self, close_code):
+        self._stop_heartbeat()
         if hasattr(self, 'group_name'):
             await self.channel_layer.group_discard(self.group_name, self.channel_name)
             logger.info(f'WebSocket 연결 해제: {self.group_name} (code: {close_code})')

@@ -7,6 +7,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
 import org.springframework.web.socket.TextMessage;
@@ -16,6 +17,7 @@ import org.springframework.web.socket.handler.TextWebSocketHandler;
 import java.io.IOException;
 import java.security.SecureRandom;
 import java.time.Duration;
+import java.time.OffsetDateTime;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
@@ -42,14 +44,18 @@ public class CustomerStaffCallWebSocketHandler extends TextWebSocketHandler {
     private final StringRedisTemplate redisTemplate;
 
     private final Map<Long, Set<WebSocketSession>> staffCallSessions = new ConcurrentHashMap<>();
+    // SUBSCRIBE 전 세션도 Cloudflare 100s idle 종료 대상이므로 별도로 추적해 heartbeat 푸시.
+    private final Set<WebSocketSession> allSessions = ConcurrentHashMap.newKeySet();
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
+        allSessions.add(session);
         log.info("[customer staffcall ws] 연결 session={}", session.getId());
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
+        allSessions.remove(session);
         for (Set<WebSocketSession> set : staffCallSessions.values()) {
             set.remove(session);
         }
@@ -59,6 +65,10 @@ public class CustomerStaffCallWebSocketHandler extends TextWebSocketHandler {
     protected void handleTextMessage(WebSocketSession session, TextMessage message) throws Exception {
         JsonNode root = objectMapper.readTree(message.getPayload());
         String type = root.path("type").asText("");
+        if ("PING".equalsIgnoreCase(type)) {
+            sendHeartbeatPong(session);
+            return;
+        }
         if (!"SUBSCRIBE".equalsIgnoreCase(type)) {
             return;
         }
@@ -191,6 +201,41 @@ public class CustomerStaffCallWebSocketHandler extends TextWebSocketHandler {
 
     private String getSubscribeToken(Long staffCallId) {
         return redisTemplate.opsForValue().get(REDIS_SUBSCRIBE_TOKEN_KEY_PREFIX + staffCallId);
+    }
+
+    /** Django cart WS와 동일한 JSON 하트비트 응답 (연결 유지·유휴 끊김 완화). */
+    private void sendHeartbeatPong(WebSocketSession session) throws IOException {
+        Map<String, Object> body = new HashMap<>();
+        body.put("type", "PONG");
+        body.put("timestamp", OffsetDateTime.now().toString());
+        body.put("message", "heartbeat");
+        body.put("data", null);
+        session.sendMessage(new TextMessage(objectMapper.writeValueAsString(body)));
+    }
+
+    // Cloudflare Free WebSocket idle 100s 종료 방지: 25s마다 전체 세션에 PONG 푸시.
+    @Scheduled(fixedRate = 25000)
+    public void broadcastHeartbeat() {
+        if (allSessions.isEmpty()) return;
+        try {
+            Map<String, Object> body = new HashMap<>();
+            body.put("type", "PONG");
+            body.put("timestamp", OffsetDateTime.now().toString());
+            body.put("message", "heartbeat");
+            body.put("data", null);
+            TextMessage tm = new TextMessage(objectMapper.writeValueAsString(body));
+            for (WebSocketSession s : allSessions) {
+                if (s.isOpen()) {
+                    try {
+                        s.sendMessage(tm);
+                    } catch (IOException e) {
+                        log.warn("[customer staffcall ws] heartbeat 전송 실패 session={}", s.getId(), e);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("[customer staffcall ws] heartbeat 직렬화 실패", e);
+        }
     }
 }
 

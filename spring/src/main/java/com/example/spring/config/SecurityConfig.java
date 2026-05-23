@@ -79,7 +79,7 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
 
-        configuration.setAllowedOrigins(Arrays.asList(
+        configuration.setAllowedOriginPatterns(Arrays.asList(
                 "http://localhost:3000",
                 "http://localhost:5173",
                 "https://localhost:5173",
@@ -96,9 +96,12 @@ public class SecurityConfig {
                 "https://127.0.0.1:5175",
                 "https://dev.dorder-api.shop",
                 "http://dev.dorder-api.shop",
+                "https://prod.dorder-api.shop",
+                "http://prod.dorder-api.shop",
                 "https://admin.dorder-api.shop",
                 "https://customer.dorder-api.shop",
-                "https://server.dorder-api.shop"
+                "https://server.dorder-api.shop",
+                "https://*.netlify.app"
         ));
 
         // 허용할 HTTP 메서드

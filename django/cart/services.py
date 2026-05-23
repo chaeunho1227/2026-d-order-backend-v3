@@ -11,7 +11,6 @@ from menu.models import *
 from order.models import *
 from .models import *
 
-PENDING_TTL_MINUTES = 3
 
 import logging
 logger = logging.getLogger(__name__)
@@ -146,7 +145,7 @@ def get_cart_item_image_url(item: CartItem) -> str | None:
 def build_cart_item_payload(item: CartItem) -> dict:
     if item.menu_id:
         name = item.menu.name
-        unit_price = int(item.menu.price)
+        unit_price = item.menu.price
         is_sold_out = item.menu.stock <= 0
     else:
         name = item.setmenu.name
@@ -349,36 +348,26 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
                     status_code=400,
                 )
 
-            if not _can_add_fee_in_this_round(cart):
-                raise CartError(
-                    "자리비는 첫 주문에서만 담을 수 있습니다.",
-                    "FEE_ONLY_FIRST_ROUND",
-                    status_code=400,
-                )
-
-            item = CartItem.objects.select_for_update().filter(
-                cart=cart,
-                menu=menu,
-                setmenu=None,
+            existing_item = CartItem.objects.select_for_update().filter(
+                cart=cart, menu=menu, setmenu=None
             ).first()
 
-            new_qty = quantity if item is None else item.quantity + quantity
+            new_qty = quantity if existing_item is None else existing_item.quantity + quantity
             _validate_fee_quantity_policy(booth=booth, quantity=new_qty)
 
-            item, created = CartItem.objects.select_for_update().get_or_create(
-                cart=cart,
-                menu=menu,
-                setmenu=None,
-                defaults={
-                    "quantity": quantity,
-                    "price_at_cart": int(menu.price),
-                },
-            )
-
-            if not created:
-                item.quantity = new_qty
-                item.price_at_cart = int(menu.price)
-                item.save(update_fields=["quantity", "price_at_cart"])
+            if existing_item is None:
+                item = CartItem.objects.create(
+                    cart=cart,
+                    menu=menu,
+                    setmenu=None,
+                    quantity=quantity,
+                    price_at_cart=menu.price,
+                )
+            else:
+                existing_item.quantity = new_qty
+                existing_item.price_at_cart = menu.price
+                existing_item.save(update_fields=["quantity", "price_at_cart"])
+                item = existing_item
 
         else:
             if menu.category == Menu.Category.FEE:
@@ -388,23 +377,26 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
                     status_code=400,
                 )
 
-            item, created = CartItem.objects.select_for_update().get_or_create(
-                cart=cart,
-                menu=menu,
-                setmenu=None,
-                defaults={
-                    "quantity": quantity,
-                    "price_at_cart": int(menu.price),
-                },
-            )
+            existing_item = CartItem.objects.select_for_update().filter(
+                cart=cart, menu=menu, setmenu=None
+            ).first()
 
-            new_qty = quantity if created else item.quantity + quantity
+            new_qty = quantity if existing_item is None else existing_item.quantity + quantity
             _validate_cart_item_stock(cart=cart, target_menu=menu, new_direct_qty=new_qty)
 
-            if not created:
-                item.quantity = new_qty
-                item.price_at_cart = int(menu.price)
-                item.save(update_fields=["quantity", "price_at_cart"])
+            if existing_item is None:
+                item = CartItem.objects.create(
+                    cart=cart,
+                    menu=menu,
+                    setmenu=None,
+                    quantity=quantity,
+                    price_at_cart=menu.price,
+                )
+            else:
+                existing_item.quantity = new_qty
+                existing_item.price_at_cart = menu.price
+                existing_item.save(update_fields=["quantity", "price_at_cart"])
+                item = existing_item
 
     elif type == "setmenu":
         if not set_menu_id:
@@ -419,23 +411,26 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
                 status_code=400,
             )
 
-        item, created = CartItem.objects.select_for_update().get_or_create(
-            cart=cart,
-            menu=None,
-            setmenu=setmenu,
-            defaults={
-                "quantity": quantity,
-                "price_at_cart": int(setmenu.price),
-            },
-        )
+        existing_item = CartItem.objects.select_for_update().filter(
+            cart=cart, menu=None, setmenu=setmenu
+        ).first()
 
-        new_qty = quantity if created else item.quantity + quantity
+        new_qty = quantity if existing_item is None else existing_item.quantity + quantity
         _validate_cart_setmenu_stock(cart=cart, target_setmenu=setmenu, new_set_qty=new_qty)
 
-        if not created:
-            item.quantity = new_qty
-            item.price_at_cart = int(setmenu.price)
-            item.save(update_fields=["quantity", "price_at_cart"])
+        if existing_item is None:
+            item = CartItem.objects.create(
+                cart=cart,
+                menu=None,
+                setmenu=setmenu,
+                quantity=quantity,
+                price_at_cart=int(setmenu.price),
+            )
+        else:
+            existing_item.quantity = new_qty
+            existing_item.price_at_cart = int(setmenu.price)
+            existing_item.save(update_fields=["quantity", "price_at_cart"])
+            item = existing_item
 
     else:
         raise CartError("type은 menu, fee 또는 setmenu여야 합니다.", "INVALID_TYPE", status_code=400)
@@ -492,19 +487,12 @@ def update_item_quantity(*, table_usage_id: int, cart_item_id: int, quantity: in
         )
 
         if menu.category == Menu.Category.FEE:
-            if not _can_add_fee_in_this_round(cart):
-                raise CartError(
-                    "자리비는 첫 주문에서만 수정할 수 있습니다.",
-                    "FEE_ONLY_FIRST_ROUND",
-                    status_code=400,
-                )
-
             _validate_fee_quantity_policy(booth=booth, quantity=quantity)
-            item.price_at_cart = int(menu.price)
+            item.price_at_cart = menu.price
 
         else:
             _validate_cart_item_stock(cart=cart, target_menu=menu, new_direct_qty=quantity)
-            item.price_at_cart = int(menu.price)
+            item.price_at_cart = menu.price
 
     elif item.setmenu_id is not None:
         setmenu = get_object_or_404(
@@ -623,7 +611,7 @@ def enter_payment_info(*, table_usage_id: int):
     total = subtotal - discount_total
 
     cart.status = Cart.Status.PENDING
-    cart.pending_expires_at = timezone.now() + timedelta(minutes=PENDING_TTL_MINUTES)
+    cart.pending_expires_at = None
     cart.save(update_fields=["status", "pending_expires_at"])
 
     logger.info(
@@ -645,7 +633,10 @@ def enter_payment_info(*, table_usage_id: int):
 
 @transaction.atomic
 def cancel_payment_and_restore_cart(*, table_usage_id: int) -> Cart:
-    cart = get_or_create_cart_by_table_usage(table_usage_id)
+    cart = get_object_or_404(
+        Cart.objects.select_for_update(),
+        table_usage_id=table_usage_id,
+    )
 
     if cart.status != Cart.Status.PENDING:
         raise CartError(
@@ -823,7 +814,7 @@ def _finalize_payment_core(cart: Cart):
                     parent=parent_item,
                     quantity=child_qty,
                     fixed_price=int(child_menu.price),
-                    status="cooking",
+                    status="COOKING",
                 )
 
                 child_menu.stock = F("stock") - child_qty
@@ -845,7 +836,10 @@ def _finalize_payment_core(cart: Cart):
 
 @transaction.atomic
 def confirm_payment_and_mark_ordered(*, table_usage_id: int) -> Cart:
-    cart = get_or_create_cart_by_table_usage(table_usage_id)
+    cart = get_object_or_404(
+        Cart.objects.select_for_update().select_related("table_usage__table__booth"),
+        table_usage_id=table_usage_id,
+    )
 
     if cart.status != Cart.Status.PENDING:
         raise CartError(
@@ -861,8 +855,7 @@ def confirm_payment_and_mark_ordered(*, table_usage_id: int) -> Cart:
     cart.save(update_fields=["status", "pending_expires_at"])
 
     final_table_usage_id = cart.table_usage_id
-    
-    # 주문 확정 시 Table 캐러셀 화면으로 알리기 위해서 웹소켓 전송이 필요합니다!
+
     table = cart.table_usage.table
     booth_id = table.booth_id
     table_num = table.table_num
@@ -877,12 +870,15 @@ def confirm_payment_and_mark_ordered(*, table_usage_id: int) -> Cart:
     from channels.layers import get_channel_layer
     from asgiref.sync import async_to_sync
 
+    order_date = order.created_at.astimezone().date()
+
     def _after_commit():
-        today_revenue = update_today_revenue(booth_id, order.order_price)
+        today_revenue = update_today_revenue(
+            booth_id, int(order.order_price), for_date=order_date
+        )
 
         group_name = f"booth_{booth_id}.order"
-        
-        # 1️⃣ ADMIN_NEW_ORDER 브로드캐스트
+
         async_to_sync(get_channel_layer().group_send)(
             group_name,
             {
@@ -890,8 +886,7 @@ def confirm_payment_and_mark_ordered(*, table_usage_id: int) -> Cart:
                 "data": {"order_id": order.pk},
             }
         )
-        
-        # 2️⃣ total_sales_update 브로드캐스트
+
         async_to_sync(get_channel_layer().group_send)(
             group_name,
             {

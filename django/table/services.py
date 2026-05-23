@@ -3,7 +3,7 @@ from datetime import datetime
 
 from .models import Table, TableGroup, TableUsage
 from django.utils.timezone import now
-from django.db import transaction
+from django.db import connection, transaction
 from django.db.models import Q
 from rest_framework.exceptions import ValidationError, NotFound
 from channels.layers import get_channel_layer
@@ -79,7 +79,7 @@ class OrderBroadcastService:
 
             channel_layer = get_channel_layer()
             if not channel_layer:
-                logger.error("[OrderBroadcast] channel_layer 없음")
+                logger.error("[broadcast_order_update] channel_layer 없음 | table_usage_id=%s", table_usage_id)
                 return
 
             try:
@@ -159,11 +159,23 @@ class TableService:
         def send_ws():
             channel_layer = get_channel_layer()
             if channel_layer is None:
-                logger.error('[TableService] channel_layer 없어요')
+                logger.error("[TableService._broadcast] channel_layer 없음 | booth_pk=%s", booth_pk)
                 return
             async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.tables', event)
 
         # 이게 있어야 교착 상태에 안 빠져요
+        transaction.on_commit(send_ws)
+
+    @staticmethod
+    def _broadcast_detail(booth_pk, table_num, event):
+        """트랜잭션 커밋 후 특정 테이블 상세 WebSocket 그룹에 이벤트를 전송"""
+        def send_ws():
+            channel_layer = get_channel_layer()
+            if channel_layer is None:
+                logger.error("[TableService._broadcast_detail] channel_layer 없음 | booth_pk=%s, table_num=%s", booth_pk, table_num)
+                return
+            async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.tables.{table_num}', event)
+
         transaction.on_commit(send_ws)
 
     @staticmethod
@@ -172,7 +184,7 @@ class TableService:
         def send_ws():
             channel_layer = get_channel_layer()
             if channel_layer is None:
-                logger.error('[TableService] channel_layer 없어요')
+                logger.error("[TableService._broadcast_to_order_group] channel_layer 없음 | booth_pk=%s", booth_pk)
                 return
             async_to_sync(channel_layer.group_send)(f'booth_{booth_pk}.order', event)
 
@@ -216,6 +228,12 @@ class TableService:
         if not table_num:
             raise ValidationError('테이블 번호는 필수입니다.')
 
+        # 락/문장 타임아웃: 동시 입장 폭주 시 워커가 무한 점유되지 않게 강제 종료
+        # 정상 락 보유는 수십 ms 수준이라 3s/5s에 거의 도달하지 않음
+        with connection.cursor() as cur:
+            cur.execute("SET LOCAL lock_timeout = '3s'")
+            cur.execute("SET LOCAL statement_timeout = '5s'")
+
         # 테이블 조회 (행 잠금: 동시 입장 요청 시 TOCTOU 경합 방지)
         # of=('self',): nullable outer join 대상 제외, Table 행만 잠금
         table = Table.objects.select_related('group__representative_table').select_for_update(of=('self',)).filter(
@@ -249,13 +267,16 @@ class TableService:
             table.status = Table.Status.IN_USE
             table.save()
 
-        TableService._broadcast(booth.pk, {
-            'type': 'enter_table',
-            'data': {
-                'table_num': table_num,
-                'started_at': table_usage.started_at.isoformat() if table_usage.started_at else None,
-            }
-        })
+        # 페이로드 평가와 브로드캐스트를 커밋 후로 미뤄 락 보유 구간 단축
+        def _emit_enter():
+            TableService._broadcast(booth.pk, {
+                'type': 'enter_table',
+                'data': {
+                    'table_num': table_num,
+                    'started_at': table_usage.started_at.isoformat() if table_usage.started_at else None,
+                }
+            })
+        transaction.on_commit(_emit_enter)
 
         return table_usage
 
@@ -365,6 +386,13 @@ class TableService:
                 'count': found_count,
             }
         })
+        for table_num in reset_table_nums:
+            TableService._broadcast_detail(booth.pk, table_num, {
+                'type': 'reset_table',
+                'data': {
+                    'table_num': table_num,
+                }
+            })
         # 주문 관리 대시보드에도 알림 (WebSocket 실시간 반영용)
         TableService._broadcast_to_order_group(booth.pk, {
             'type': 'admin_table_reset',

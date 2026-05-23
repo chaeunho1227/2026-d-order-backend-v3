@@ -39,7 +39,7 @@ public interface StaffCallRepository extends JpaRepository<StaffCall, Long> {
               CASE
                 WHEN sc.status = 'ACCEPTED' THEN sc.accepted_at
                 ELSE sc.created_at
-              END DESC,
+              END ASC,
               sc.id DESC
             LIMIT :limit OFFSET :offset
             """, nativeQuery = true)

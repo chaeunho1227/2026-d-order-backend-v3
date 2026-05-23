@@ -36,6 +36,8 @@ jobs:
     needs: check-labels
     if: needs.check-labels.outputs.test-all == 'true' || needs.check-labels.outputs.test-django == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
 
     services:
       postgres:
@@ -62,6 +64,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -70,7 +75,6 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-          cache: 'pip'
 
       - name: Install dependencies
         run: |
@@ -102,6 +106,10 @@ jobs:
     needs: check-labels
     if: needs.check-labels.outputs.test-all == 'true' || needs.check-labels.outputs.test-spring == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     services:
       postgres:
         image: postgres:15-alpine
@@ -133,7 +141,6 @@ jobs:
         with:
           java-version: '21'
           distribution: 'temurin'
-          cache: 'gradle'
       - name: Run tests
         env:
           SPRING_DATASOURCE_URL: jdbc:postgresql://localhost:5432/d_order_test

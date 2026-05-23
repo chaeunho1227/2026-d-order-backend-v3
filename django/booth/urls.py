@@ -7,4 +7,5 @@ urlpatterns = [
     path("<uuid:booth_uuid>/name/", BoothNamePublicAPIView.as_view(), name="name"),
     path("name/", BoothNameAPIView.as_view(), name="name"),
     path("mypage/reset-table-data/", BoothTableUsageResetAPIView.as_view(), name="reset-table-data"),
+    path("ad-banner/", BoothAdBannerAPIView.as_view(), name="ad-banner"),
 ]

@@ -261,7 +261,7 @@ class SetMenuSerializer(serializers.ModelSerializer):
         """구성품의 base_price * quantity 합계"""
         total = 0
         for item in obj.items.all():
-            total += int(item.menu.price) * item.quantity
+            total += item.menu.price * item.quantity
         return total
     
     def get_is_soldout(self, obj):
@@ -363,7 +363,7 @@ class SetMenuUpdateSerializer(serializers.ModelSerializer):
         """구성품의 base_price * quantity 합계"""
         total = 0
         for item in obj.items.all():
-            total += int(item.menu.price) * item.quantity
+            total += item.menu.price * item.quantity
         return total
     
     def get_is_soldout(self, obj):

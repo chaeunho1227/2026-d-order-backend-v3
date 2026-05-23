@@ -19,7 +19,7 @@ class OrderItemStatusUpdateRequestSerializer(serializers.Serializer):
         choices=['COOKING', 'COOKED', 'SERVED', 'cooking', 'cooked', 'served'],
         error_messages={
             'required': 'target_status는 필수값입니다.',
-            'invalid_choice': '유효하지 않은 상태값입니다: {value}',
+            'invalid_choice': '유효하지 않은 상태값입니다: {input}',
         }
     )
 

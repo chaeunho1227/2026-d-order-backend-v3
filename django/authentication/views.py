@@ -34,8 +34,8 @@ class SignupAPIView(APIView):
         serializer = UserBoothSignupSerializer(data=request.data)
         if not serializer.is_valid():
             logger.warning(
-                "[Signup] 입력값 검증 실패 | username=%s | errors=%s",
-                username, serializer.errors
+                "[Signup] 입력값 검증 실패 | username=%s | error_fields=%s",
+                username, list(serializer.errors.keys())
             )
             return Response({
                 "message": "회원가입에 실패했습니다.",
@@ -64,7 +64,8 @@ class SignupAPIView(APIView):
                 },
             }, status=status.HTTP_201_CREATED)
 
-            # 5. 쿠키 설정 (Utils)
+            # 5. 쿠키 설정 (Utils) - host-only로 발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -137,7 +138,8 @@ class AuthAPIView(APIView):
                 }
             }, status=status.HTTP_200_OK)
 
-            # 4. 쿠키 설정 (Utils)
+            # 4. 쿠키 설정 (Utils) - host-only로 발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -157,7 +159,8 @@ class AuthAPIView(APIView):
             "message": "로그아웃 성공"
         }, status=status.HTTP_200_OK)
 
-        # 쿠키 삭제 (Utils)
+        # 쿠키 삭제 (Utils) - 현재 host-only 쿠키 삭제
+        # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
         delete_jwt_cookies(response)
 
         return response
@@ -214,7 +217,8 @@ class TokenRefreshAPIView(APIView):
                 }
             }, status=status.HTTP_200_OK)
 
-            # 쿠키 설정 (Utils)
+            # 쿠키 설정 (Utils) - host-only로 재발급
+            # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
             set_jwt_cookies(
                 response,
                 access_token=tokens['access_token'],
@@ -224,6 +228,7 @@ class TokenRefreshAPIView(APIView):
             return response
 
         except Exception:
+            logger.warning("[TokenRefresh] 갱신 실패", exc_info=True)
             return Response({
                 "message": "Refresh 토큰이 유효하지 않음"
             }, status=status.HTTP_401_UNAUTHORIZED)
@@ -243,6 +248,8 @@ class CsrfTokenView(APIView):
     def get(self, request):
         """CSRF 토큰 발급"""
         csrf_token = get_token(request)
-        return Response({
+        response = Response({
             "csrfToken": csrf_token
         }, status=status.HTTP_200_OK)
+        # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
+        return response

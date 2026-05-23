@@ -95,115 +95,127 @@ class OrderService:
 
         table_num = order.table_usage.table.table_num
 
+        # collect after-commit tasks so external side-effects run only after DB commit
+        _after_commit_tasks = []
+
         # ─── COOKING → Redis 발행 (서빙 요청 취소) ───
-        # 조리중으로 다시 변경되었을 때 (COOKED → COOKING), Spring의 ServingTask 제거
         if target_status == "COOKING" and old_status == "COOKED":
-            try:
-                from core.redis_client import publish
-                publish(
-                    f"booth:{booth_id}:order:cooking",
-                    {
-                        "event": "SERVING_CANCELLED",
-                        "order_item_id": order_item_id,
-                        "table_num": table_num,
-                        "menu_name": menu_name,
-                        "quantity": item.quantity,
-                        "reason": "조리 다시 시작",
-                        "timestamp": timezone.localtime(now).isoformat(),
-                    }
-                )
-                logger.info(
-                    f"[ServingTask 취소] order_item_id={order_item_id}, "
-                    f"테이블={table_num}, 메뉴={menu_name}"
-                )
-            except Exception as e:
-                logger.error(f"[OrderItem] Redis 발행 실패 (COOKING): {e}")
+            cooking_payload = {
+                "event": "SERVING_CANCELLED",
+                "order_item_id": order_item_id,
+                "table_num": table_num,
+                "menu_name": menu_name,
+                "quantity": item.quantity,
+                "reason": "조리 다시 시작",
+                "timestamp": timezone.localtime(now).isoformat(),
+            }
+
+            def _task_cooking():
+                try:
+                    from core.redis_client import publish
+                    publish(f"booth:{booth_id}:order:cooking", cooking_payload)
+                    logger.info(f"[ServingTask 취소] order_item_id={order_item_id}, 테이블={table_num}, 메뉴={menu_name}")
+                except Exception:
+                    logger.exception("[OrderItem] Redis 발행 실패 (COOKING)")
+
+            _after_commit_tasks.append(_task_cooking)
 
         # ─── COOKED → Redis 발행 (스프링부트 서빙 알림) ───
         if target_status == "COOKED":
-            try:
-                from core.redis_client import publish
-                publish(
-                    f"booth:{booth_id}:order:cooked",
-                    {
-                        "order_item_id": order_item_id,
-                        "table_num": table_num,
-                        "menu_name": menu_name,
-                        "quantity": item.quantity,
-                        "status": "cooked",
-                        "pushed_at": timezone.localtime(now).isoformat(),
-                    }
-                )
-            except Exception as e:
-                logger.error(f"[OrderItem] Redis 발행 실패: {e}")
+            cooked_payload = {
+                "order_item_id": order_item_id,
+                "table_num": table_num,
+                "menu_name": menu_name,
+                "quantity": item.quantity,
+                "status": "cooked",
+                "pushed_at": timezone.localtime(now).isoformat(),
+            }
+
+            def _task_cooked():
+                try:
+                    from core.redis_client import publish
+                    publish(f"booth:{booth_id}:order:cooked", cooked_payload)
+                except Exception:
+                    logger.exception(
+                        f"[OrderItem] Redis 발행 실패 (COOKED) item_id={order_item_id}, booth_id={booth_id}"
+                    )
+
+            _after_commit_tasks.append(_task_cooked)
 
         # ─── SERVED → Redis 발행 (스프링부트 ServingTask 완료) ───
         if target_status == "SERVED":
-            try:
-                from core.redis_client import publish
-                publish(
-                    f"booth:{booth_id}:order:served",
-                    {
-                        "event": "ORDER_ITEM_SERVED",
-                        "order_item_id": order_item_id,
-                        "table_num": table_num,
-                        "menu_name": menu_name,
-                        "status": "served",
-                        "timestamp": timezone.localtime(now).isoformat(),
-                    }
-                )
-            except Exception as e:
-                logger.error(f"[OrderItem] Redis 발행 실패 (SERVED): {e}")
+            served_payload = {
+                "event": "ORDER_ITEM_SERVED",
+                "order_item_id": order_item_id,
+                "table_num": table_num,
+                "menu_name": menu_name,
+                "status": "served",
+                "timestamp": timezone.localtime(now).isoformat(),
+            }
+
+            def _task_served():
+                try:
+                    from core.redis_client import publish
+                    publish(f"booth:{booth_id}:order:served", served_payload)
+                except Exception:
+                    logger.exception("[OrderItem] Redis 발행 실패 (SERVED)")
+
+            _after_commit_tasks.append(_task_served)
 
         # ─── WebSocket: ADMIN_ORDER_UPDATE (구성품별 items 배열) ───
-        try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
+        items_payload = [{
+            "order_item_id": order_item_id,
+            "menu_name": menu_name,
+            "status": target_status,
+            "is_set": item.parent_id is not None,
+            "set_menu_name": set_menu_name,
+            "parent_order_item_id": item.parent_id,
+            "cooked_at": timezone.localtime(item.cooked_at).isoformat() if item.cooked_at else None,
+            "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
+        }]
 
-            group_name = f"booth_{booth_id}.order"
-            channel_layer = get_channel_layer()
+        def _task_admin_ws():
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                from order.cache import query_menu_aggregation
 
-            items_payload = [{
-                "order_item_id": order_item_id,
-                "menu_name": menu_name,
-                "status": target_status,
-                "is_set": item.parent_id is not None,
-                "set_menu_name": set_menu_name,
-                "parent_order_item_id": item.parent_id,
-                "cooked_at": timezone.localtime(item.cooked_at).isoformat() if item.cooked_at else None,
-                "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
-            }]
+                group_name = f"booth_{booth_id}.order"
+                channel_layer = get_channel_layer()
 
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_order_update",
-                    "data": {
-                        "order_id": order.pk,
-                        "items": items_payload,
-                    },
-                }
-            )
-            
-            # 메뉴 집계 갱신
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_menu_aggregation",
-                    "data": {}
-                }
-            )
-        except Exception as e:
-            logger.error(f"[OrderItem] WebSocket ADMIN_ORDER_UPDATE 전송 실패: {e}")
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_order_update",
+                        "data": {
+                            "order_id": order.pk,
+                            "items": items_payload,
+                        },
+                    }
+                )
+
+                # 집계를 1회 계산해서 페이로드에 포함 → consumer별 DB 재조회 불필요
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
+                )
+            except Exception:
+                logger.warning("[OrderItem] WebSocket ADMIN_ORDER_UPDATE 전송 실패", exc_info=True)
+
+        _after_commit_tasks.append(_task_admin_ws)
 
         # ─── 전체 SERVED 체크 → ORDER_COMPLETED ───
         # 리프 아이템만 대상: 세트메뉴 부모(parent=None, setmenu≠None) 제외
         # FEE 카테고리 제외 (테이블 이용료는 상태 변경 대상 아님)
+        # CANCELLED 아이템 제외 (취소된 아이템은 서빙 대상 아님)
         all_served = not (
             order.items
             .exclude(parent__isnull=True, setmenu__isnull=False)
             .exclude(menu__category="FEE")
-            .exclude(status="SERVED")
+            .exclude(status__in=["SERVED", "CANCELLED"])
             .exists()
         )
 
@@ -229,37 +241,43 @@ class OrderService:
 
             logger.info(f"[Order 완료] order_id={order.pk} 모든 아이템 서빙 완료")
 
-            try:
-                from channels.layers import get_channel_layer
-                from asgiref.sync import async_to_sync
+            def _task_order_completed_ws():
+                try:
+                    from channels.layers import get_channel_layer
+                    from asgiref.sync import async_to_sync
 
-                group_name = f"booth_{booth_id}.order"
-                channel_layer = get_channel_layer()
+                    group_name = f"booth_{booth_id}.order"
+                    channel_layer = get_channel_layer()
 
-                async_to_sync(channel_layer.group_send)(
-                    group_name,
-                    {
-                        "type": "admin_order_completed",
-                        "data": {
-                            "order_id": order.pk,
-                            "table_num": table_num,
-                            "table_usage_id": order.table_usage_id,
-                            "order_status": "COMPLETED",
-                            "updated_at": updated_at_str,
-                        },
-                    }
-                )
-            except Exception as e:
-                logger.error(f"[OrderItem] WebSocket ORDER_COMPLETED 전송 실패: {e}")
+                    async_to_sync(channel_layer.group_send)(
+                        group_name,
+                        {
+                            "type": "admin_order_completed",
+                            "data": {
+                                "order_id": order.pk,
+                                "table_num": table_num,
+                                "table_usage_id": order.table_usage_id,
+                                "order_status": "COMPLETED",
+                                "updated_at": updated_at_str,
+                            },
+                        }
+                    )
+                except Exception:
+                    logger.warning("[OrderItem] WebSocket ORDER_COMPLETED 전송 실패", exc_info=True)
+
+            _after_commit_tasks.append(_task_order_completed_ws)
 
         # ─── 테이블 WebSocket 브로드캐스트 ───
-        try:
-            from table.services import OrderBroadcastService
-            OrderBroadcastService.broadcast_order_update(
-                booth_id, table_num, order.table_usage_id
-            )
-        except Exception as e:
-            logger.error(f"[OrderItem] 테이블 WS 브로드캐스트 실패: {e}")
+        def _task_table_broadcast():
+            try:
+                from table.services import OrderBroadcastService
+                OrderBroadcastService.broadcast_order_update(
+                    booth_id, table_num, order.table_usage_id
+                )
+            except Exception:
+                logger.warning("[OrderItem] 테이블 WS 브로드캐스트 실패", exc_info=True)
+
+        _after_commit_tasks.append(_task_table_broadcast)
 
         # 상태에 따른 메시지
         status_messages = {
@@ -267,6 +285,16 @@ class OrderService:
             "COOKED": "조리완료 처리되었습니다.",
             "SERVED": "서빙완료 처리되었습니다.",
         }
+
+        # register on_commit callback to run external side-effects
+        def _after_commit_runner():
+            for t in _after_commit_tasks:
+                try:
+                    t()
+                except Exception:
+                    logger.exception("[OrderItem] after_commit task failed")
+
+        transaction.on_commit(_after_commit_runner)
 
         return {
             "success": True,
@@ -278,8 +306,22 @@ class OrderService:
     # 개별 주문 아이템 취소 (부분/전체)
     # ─────────────────────────────────────────────
     @staticmethod
-    @transaction.atomic
     def cancel_order_item(order_item_id: int, cancel_quantity: int, booth_id: int) -> dict:
+        revenue_holder: dict = {}
+        result = OrderService._cancel_order_item_atomic(
+            order_item_id, cancel_quantity, booth_id, revenue_holder
+        )
+        if "data" in result and "new_total_sales" in result["data"]:
+            result["data"]["new_total_sales"] = revenue_holder.get(
+                "new_total_sales", result["data"]["new_total_sales"]
+            )
+        return result
+
+    @staticmethod
+    @transaction.atomic
+    def _cancel_order_item_atomic(
+        order_item_id: int, cancel_quantity: int, booth_id: int, revenue_holder: dict
+    ) -> dict:
         """
         개별 주문 아이템 취소.
 
@@ -371,12 +413,12 @@ class OrderService:
         order.save(update_fields=["order_price", "updated_at"])
 
         # 9-1) 모든 아이템이 CANCELLED면 Order도 CANCELLED
-        # FEE 카테고리 제외 (테이블 이용료는 항상 존재함)
+        # 테이블 이용료(FEE)는 주문의 일부로 취급하여, FEE 항목이 남아있으면
+        # 주문 전체가 취소되지 않도록 판정합니다.
         all_cancelled = not (
             order.items
             .exclude(status="CANCELLED")
             .exclude(parent__isnull=True, setmenu__isnull=False)  # 세트메뉴 부모 쉘 제외
-            .exclude(menu__category="FEE")  # FEE 제외
             .exists()
         )
         if all_cancelled:
@@ -389,90 +431,101 @@ class OrderService:
         table_usage.accumulated_amount -= refund_amount
         table_usage.save(update_fields=["accumulated_amount"])
 
-        # 11) 오늘 매출 캐시 감소 (DB 쿼리 대체)
-        from order.cache import update_today_revenue
-        new_total_sales = update_today_revenue(booth_id, -refund_amount)
-
         new_item_total_price = item.fixed_price * remaining_quantity
 
-        logger.info(
-            f"[OrderItem 취소] item_id={order_item_id} "
-            f"qty={old_quantity}→{remaining_quantity} "
-            f"환불={refund_amount:,} 새매출={new_total_sales:,}"
+        # 11) 커밋 후 캐시 갱신 + WS 브로드캐스트 + Redis 발행
+        #     트랜잭션 롤백 시 외부 이벤트가 먼저 발행되지 않도록 on_commit 사용
+        order_date = timezone.localtime(order.created_at).date()
+        order_pk = order.pk
+        table_usage_id = order.table_usage_id
+        table_num = order.table_usage.table.table_num
+        menu_name = (
+            item.setmenu.name if item.setmenu_id
+            else (item.menu.name if item.menu_id else "알 수 없음")
         )
 
-        # 12) WebSocket 브로드캐스트
+        def _after_commit():
+            from order.cache import update_today_revenue
+
+            new_total_sales = update_today_revenue(
+                booth_id, -refund_amount, for_date=order_date
+            )
+            revenue_holder["new_total_sales"] = new_total_sales
+
+            logger.info(
+                f"[OrderItem 취소] item_id={order_item_id} "
+                f"qty={old_quantity}→{remaining_quantity} "
+                f"환불={refund_amount:,} 새매출={new_total_sales:,}"
+            )
+
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+
+                group_name = f"booth_{booth_id}.order"
+                channel_layer = get_channel_layer()
+
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_order_cancelled",
+                        "data": {
+                            "order_id": order_pk,
+                            "item_id": order_item_id,
+                            "refund_amount": refund_amount,
+                            "remaining_quantity": remaining_quantity,
+                            "new_total_sales": new_total_sales,
+                        },
+                    }
+                )
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {"type": "total_sales_update", "data": {"today_revenue": new_total_sales}}
+                )
+            except Exception:
+                logger.warning("[OrderItem 취소] WebSocket 전송 실패", exc_info=True)
+
+            try:
+                import uuid
+                from core.redis_client import publish
+
+                now_str = timezone.localtime().isoformat()
+                publish(
+                    f"booth:{booth_id}:order:refund",
+                    {
+                        "event_id": str(uuid.uuid4()),
+                        "event_type": "order.item_refund",
+                        "occurred_at": now_str,
+                        "data": {
+                            "table_usage_id": table_usage_id,
+                            "order_id": order_pk,
+                            "order_item_id": order_item_id,
+                            "menu_name": menu_name,
+                            "cancel_quantity": cancel_quantity,
+                            "refund_price": refund_amount,
+                            "is_full_cancel": remaining_quantity == 0,
+                            "pushed_at": now_str,
+                        },
+                    }
+                )
+            except Exception:
+                logger.exception("[OrderItem 취소] Redis 환불 알림 발행 실패")
+
+            try:
+                from table.services import OrderBroadcastService
+                OrderBroadcastService.broadcast_order_update(
+                    booth_id, table_num, table_usage_id
+                )
+            except Exception:
+                logger.warning("[OrderItem 취소] 테이블 WS 브로드캐스트 실패", exc_info=True)
+
+        transaction.on_commit(_after_commit)
+
+        # Return the updated total sales from the DB (TableUsage.accumulated_amount)
         try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
-
-            group_name = f"booth_{booth_id}.order"
-            channel_layer = get_channel_layer()
-
-            # ADMIN_ORDER_CANCELLED
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_order_cancelled",
-                    "data": {
-                        "order_id": order.pk,
-                        "item_id": order_item_id,
-                        "refund_amount": refund_amount,
-                        "remaining_quantity": remaining_quantity,
-                        "new_total_sales": new_total_sales,
-                    },
-                }
-            )
-
-            # 오늘 매출 갱신 이벤트 (계산된 값 포함)
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {"type": "total_sales_update", "data": {"today_revenue": new_total_sales}}
-            )
-        except Exception as e:
-            logger.error(f"[OrderItem 취소] WebSocket 전송 실패: {e}")
-
-        # 13) Redis 발행 → 스프링부트 (손님 환불 알림)
-        try:
-            import uuid
-            from core.redis_client import publish
-
-            menu_name = (
-                item.setmenu.name if item.setmenu_id
-                else (item.menu.name if item.menu_id else "알 수 없음")
-            )
-            now_str = timezone.localtime().isoformat()
-
-            publish(
-                f"booth:{booth_id}:order:refund",
-                {
-                    "event_id": str(uuid.uuid4()),
-                    "event_type": "order.item_refund",
-                    "occurred_at": now_str,
-                    "data": {
-                        "table_usage_id": order.table_usage_id,
-                        "order_id": order.pk,
-                        "order_item_id": order_item_id,
-                        "menu_name": menu_name,
-                        "cancel_quantity": cancel_quantity,
-                        "refund_price": refund_amount,
-                        "is_full_cancel": remaining_quantity == 0,
-                        "pushed_at": now_str,
-                    },
-                }
-            )
-        except Exception as e:
-            logger.error(f"[OrderItem 취소] Redis 환불 알림 발행 실패: {e}")
-
-        # 14) 테이블 WebSocket 브로드캐스트
-        try:
-            from table.services import OrderBroadcastService
-            table_num = order.table_usage.table.table_num
-            OrderBroadcastService.broadcast_order_update(
-                booth_id, table_num, order.table_usage_id
-            )
-        except Exception as e:
-            logger.error(f"[OrderItem 취소] 테이블 WS 브로드캐스트 실패: {e}")
+            new_total_sales_db = int(table_usage.accumulated_amount)
+        except Exception:
+            new_total_sales_db = 0
 
         return {
             "success": True,
@@ -482,7 +535,7 @@ class OrderService:
                 "remaining_quantity": remaining_quantity,
                 "refund_amount": refund_amount,
                 "new_item_total_price": new_item_total_price,
-                "new_total_sales": new_total_sales,
+                "new_total_sales": new_total_sales_db,
             },
         }
 
@@ -562,56 +615,63 @@ class OrderService:
             f"[Serving] item_id={order_item_id} "
             f"{old_status} → {target_status} (booth:{booth_id})"
         )
+        # collect after-commit tasks so external side-effects run only after DB commit
+        _after_commit_tasks = []
 
         # WebSocket: ADMIN_ORDER_UPDATE (구성품별 items 배열)
-        try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
+        items_payload = [{
+            "order_item_id": order_item_id,
+            "menu_name": menu_name,
+            "status": target_status,
+            "is_set": item.parent_id is not None,
+            "set_menu_name": set_menu_name,
+            "parent_order_item_id": item.parent_id,
+            "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
+        }]
 
-            group_name = f"booth_{booth_id}.order"
-            channel_layer = get_channel_layer()
+        def _task_admin_ws():
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+                from order.cache import query_menu_aggregation
 
-            items_payload = [{
-                "order_item_id": order_item_id,
-                "menu_name": menu_name,
-                "status": target_status,
-                "is_set": item.parent_id is not None,
-                "set_menu_name": set_menu_name,
-                "parent_order_item_id": item.parent_id,
-                "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
-            }]
+                group_name = f"booth_{booth_id}.order"
+                channel_layer = get_channel_layer()
 
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_order_update",
-                    "data": {
-                        "order_id": order.pk,
-                        "items": items_payload,
-                    },
-                }
-            )
-            
-            # 메뉴 집계 갱신
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_menu_aggregation",
-                    "data": {}
-                }
-            )
-        except Exception as e:
-            logger.error(f"[Serving] WebSocket ADMIN_ORDER_UPDATE 전송 실패: {e}")
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_order_update",
+                        "data": {
+                            "order_id": order.pk,
+                            "items": items_payload,
+                        },
+                    }
+                )
+
+                # 집계를 1회 계산해서 페이로드에 포함 → consumer별 DB 재조회 불필요
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
+                )
+            except Exception:
+                logger.warning("[Serving] WebSocket ADMIN_ORDER_UPDATE 전송 실패", exc_info=True)
+
+        _after_commit_tasks.append(_task_admin_ws)
 
         # SERVED일 때: 전체 아이템 SERVED 체크 → ORDER_COMPLETED
         # 리프 아이템만 대상: 세트메뉴 부모(parent=None, setmenu≠None) 제외
         # FEE 카테고리 제외 (테이블 이용료는 상태 변경 대상 아님)
+        # CANCELLED 아이템 제외 (취소된 아이템은 서빙 대상 아님)
         if target_status == "SERVED":
             all_served = not (
                 order.items
                 .exclude(parent__isnull=True, setmenu__isnull=False)
                 .exclude(menu__category="FEE")
-                .exclude(status="SERVED")
+                .exclude(status__in=["SERVED", "CANCELLED"])
                 .exists()
             )
 
@@ -623,37 +683,53 @@ class OrderService:
 
                 logger.info(f"[Order 완료] order_id={order.pk} 모든 아이템 서빙 완료")
 
-                try:
-                    from channels.layers import get_channel_layer
-                    from asgiref.sync import async_to_sync
+                def _task_order_completed_ws():
+                    try:
+                        from channels.layers import get_channel_layer
+                        from asgiref.sync import async_to_sync
 
-                    group_name = f"booth_{booth_id}.order"
-                    channel_layer = get_channel_layer()
+                        group_name = f"booth_{booth_id}.order"
+                        channel_layer = get_channel_layer()
 
-                    async_to_sync(channel_layer.group_send)(
-                        group_name,
-                        {
-                            "type": "admin_order_completed",
-                            "data": {
-                                "order_id": order.pk,
-                                "table_num": table_num,
-                                "table_usage_id": order.table_usage_id,
-                                "order_status": "COMPLETED",
-                                "updated_at": updated_at_str,
-                            },
-                        }
-                    )
-                except Exception as e:
-                    logger.error(f"[Serving] WebSocket ORDER_COMPLETED 전송 실패: {e}")
+                        async_to_sync(channel_layer.group_send)(
+                            group_name,
+                            {
+                                "type": "admin_order_completed",
+                                "data": {
+                                    "order_id": order.pk,
+                                    "table_num": table_num,
+                                    "table_usage_id": order.table_usage_id,
+                                    "order_status": "COMPLETED",
+                                    "updated_at": updated_at_str,
+                                },
+                            }
+                        )
+                    except Exception:
+                        logger.warning("[Serving] WebSocket ORDER_COMPLETED 전송 실패", exc_info=True)
+
+                _after_commit_tasks.append(_task_order_completed_ws)
 
         # ─── 테이블 WebSocket 브로드캐스트 ───
-        try:
-            from table.services import OrderBroadcastService
-            OrderBroadcastService.broadcast_order_update(
-                booth_id, table_num, order.table_usage_id
-            )
-        except Exception as e:
-            logger.error(f"[Serving] 테이블 WS 브로드캐스트 실패: {e}")
+        def _task_table_broadcast():
+            try:
+                from table.services import OrderBroadcastService
+                OrderBroadcastService.broadcast_order_update(
+                    booth_id, table_num, order.table_usage_id
+                )
+            except Exception:
+                logger.warning("[Serving] 테이블 WS 브로드캐스트 실패", exc_info=True)
+
+        _after_commit_tasks.append(_task_table_broadcast)
+
+        # register on_commit callback to run external side-effects
+        def _after_commit_runner():
+            for t in _after_commit_tasks:
+                try:
+                    t()
+                except Exception:
+                    logger.exception("[Serving] after_commit task failed")
+
+        transaction.on_commit(_after_commit_runner)
 
         return {"result": "success", "status": target_status}
 
@@ -665,7 +741,7 @@ class OrderService:
         Order / OrderItem을 생성하고 Cart를 종료한다.
 
         Returns:
-            dict: {"result": "created" | "duplicate_event" | "duplicate_cart" | "invalid_status"}
+            dict: {"result": "success" | "duplicate_event" | "duplicate_cart" | "invalid_status"}
         """
         event_id = event_data.get("event_id")
         data = event_data["data"]
@@ -763,63 +839,75 @@ class OrderService:
             f"price={order.order_price}, discount={order.total_discount}"
         )
 
-        # ⑨ WebSocket 브로드캐스트
+        # ⑨ 커밋 후: 캐시 갱신 + WebSocket 브로드캐스트 + 테이블 브로드캐스트
         booth_id = table_usage.table.booth_id
-        try:
+        order_price_int = int(order.order_price)
+        order_pk = order.pk
+        original_price_int = int(order.original_price) if order.original_price else 0
+        total_discount_int = int(order.total_discount) if order.total_discount else 0
+        order_status_snapshot = order.order_status
+        order_date = timezone.localtime(order.created_at).date()
+        table_num = table_usage.table.table_num
+
+        def _send_ws_events_after_commit():
             from channels.layers import get_channel_layer
             from asgiref.sync import async_to_sync
             from order.cache import update_today_revenue
 
-            # order.order_price를 int로 변환 (Decimal → int)
-            order_price_int = int(order.order_price)
-            today_revenue = update_today_revenue(booth_id, order_price_int)
-            group_name = f"booth_{booth_id}.order"
-            channel_layer = get_channel_layer()
+            try:
+                today_revenue = update_today_revenue(
+                    booth_id, order_price_int, for_date=order_date
+                )
+            except Exception:
+                logger.warning("[Order] 매출 캐시 갱신 실패", exc_info=True)
+                today_revenue = None
 
-            # 트랜잭션 커밋 이후 전송해야 consumer 조회 시 최신 데이터가 보장됨
-            def _send_ws_events_after_commit():
-                try:
-                    async_to_sync(channel_layer.group_send)(
-                        group_name,
-                        {
-                            "type": "admin_new_order",
-                            "data": {
-                                "order_id": order.pk,
-                                "cart_id": cart_id,
-                                "table_usage_id": table_usage_id,
-                                "order_price": order_price_int,
-                                "original_price": int(order.original_price) if order.original_price else 0,
-                                "total_discount": int(order.total_discount) if order.total_discount else 0,
-                                "order_status": order.order_status,
-                            }
+            try:
+                group_name = f"booth_{booth_id}.order"
+                channel_layer = get_channel_layer()
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_new_order",
+                        "data": {
+                            "order_id": order_pk,
+                            "cart_id": cart_id,
+                            "table_usage_id": table_usage_id,
+                            "order_price": order_price_int,
+                            "original_price": original_price_int,
+                            "total_discount": total_discount_int,
+                            "order_status": order_status_snapshot,
                         }
-                    )
-                    # 오늘 매출 갱신 이벤트 (계산된 값 포함 → Consumer DB 쿼리 불필요)
+                    }
+                )
+                if today_revenue is not None:
                     async_to_sync(channel_layer.group_send)(
                         group_name,
                         {"type": "total_sales_update", "data": {"today_revenue": today_revenue}}
                     )
-                    # 메뉴 집계 갱신
-                    async_to_sync(channel_layer.group_send)(
-                        group_name,
-                        {"type": "admin_menu_aggregation", "data": {}}
-                    )
-                except Exception as ws_err:
-                    logger.error(f"[Order] WebSocket 전송 실패 (주문은 정상 생성됨): {ws_err}")
+                from order.cache import query_menu_aggregation
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
+                )
+            except Exception:
+                logger.warning("[Order] WebSocket 전송 실패 (주문은 정상 생성됨)", exc_info=True)
 
-            transaction.on_commit(_send_ws_events_after_commit)
-        except Exception as ws_err:
-            logger.error(f"[Order] WebSocket 준비 실패 (주문은 정상 생성됨): {ws_err}")
+            try:
+                from table.services import OrderBroadcastService
+                OrderBroadcastService.broadcast_order_update(
+                    booth_id, table_num, table_usage_id
+                )
+            except Exception:
+                logger.warning("[Order] 테이블 WS 브로드캐스트 실패 (주문은 정상 생성됨)", exc_info=True)
 
-        # ⑩ 테이블 WebSocket 브로드캐스트
         try:
-            from table.services import OrderBroadcastService
-            table_num = table_usage.table.table_num
-            OrderBroadcastService.broadcast_order_update(
-                booth_id, table_num, table_usage_id
-            )
-        except Exception as e:
-            logger.error(f"[Order] 테이블 WS 브로드캐스트 실패 (주문은 정상 생성됨): {e}")
+            transaction.on_commit(_send_ws_events_after_commit)
+        except Exception:
+            logger.warning("[Order] WebSocket 준비 실패 (주문은 정상 생성됨)", exc_info=True)
 
         # ✅ 주문 생성 성공 반환
         return {"result": "success", "order_id": order.pk}
@@ -881,12 +969,15 @@ class OrderService:
         )
 
         # ④ WebSocket 알림 (사용자 화면에 장바구니 상태로 돌아가도록)
-        try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
+        table_usage_id = data.get("table_usage_id")
 
-            table_usage_id = data.get("table_usage_id")
-            if table_usage_id:
+        def _send_ws_after_commit():
+            if not table_usage_id:
+                return
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
+
                 table_usage = TableUsage.objects.get(pk=table_usage_id)
                 booth_id = table_usage.table.booth_id
                 group_name = f"booth_{booth_id}.order"
@@ -901,8 +992,10 @@ class OrderService:
                         }
                     }
                 )
-        except Exception as ws_err:
-            logger.error(f"[PaymentRejected] WebSocket 전송 실패 (Cart 복구는 완료): {ws_err}")
+            except Exception:
+                logger.warning("[PaymentRejected] WebSocket 전송 실패 (Cart 복구는 완료)", exc_info=True)
+
+        transaction.on_commit(_send_ws_after_commit)
 
         return {"result": "success"}
 
@@ -927,15 +1020,15 @@ class OrderService:
             OrderItem.objects
             .filter(
                 order__table_usage_id__in=table_usage_ids,
-                status__in=["COOKED", "cooked", "SERVING", "serving"],
+                status__in=["COOKED", "SERVING"],
             )
             .select_related("menu", "setmenu", "parent__setmenu")
         )
 
         try:
             from core.redis_client import publish
-        except Exception as e:
-            logger.error(f"[TableReset] Redis import 실패: {e}")
+        except Exception:
+            logger.exception("[TableReset] Redis import 실패")
             return
 
         now_str = timezone.localtime().isoformat()
@@ -962,8 +1055,8 @@ class OrderService:
                 logger.info(
                     f"[TableReset] SERVING_CANCELLED 발행: item_id={item.pk}, menu={menu_name}"
                 )
-            except Exception as e:
-                logger.error(f"[TableReset] Redis 발행 실패 item_id={item.pk}: {e}")
+            except Exception:
+                logger.exception(f"[TableReset] Redis 발행 실패 item_id={item.pk}")
 
     # ─────────────────────────────────────────────
     # 주문 내역 dict 조립
@@ -1157,61 +1250,70 @@ class OrderService:
             f"{old_status} → COOKED (reason: {reason}, booth: {booth_id})"
         )
 
-        # WebSocket: ADMIN_ORDER_UPDATE
-        try:
-            from channels.layers import get_channel_layer
-            from asgiref.sync import async_to_sync
+        if item.parent_id is not None:
+            set_menu_name = item.parent.setmenu.name if item.parent and item.parent.setmenu_id else None
+        else:
+            set_menu_name = None
 
-            group_name = f"booth_{booth_id}.order"
-            channel_layer = get_channel_layer()
+        items_payload = [{
+            "order_item_id": order_item_id,
+            "menu_name": menu_name,
+            "status": "COOKED",
+            "is_set": item.parent_id is not None,
+            "set_menu_name": set_menu_name,
+            "parent_order_item_id": item.parent_id,
+            "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
+            "rollback_reason": reason,
+        }]
+        order_pk = order.pk
+        table_usage_id = order.table_usage_id
 
-            if item.parent_id is not None:
-                # 세트메뉴 자식 아이템
-                set_menu_name = item.parent.setmenu.name if item.parent and item.parent.setmenu_id else None
-            else:
-                set_menu_name = None
+        def _task_admin_ws():
+            try:
+                from channels.layers import get_channel_layer
+                from asgiref.sync import async_to_sync
 
-            items_payload = [{
-                "order_item_id": order_item_id,
-                "menu_name": menu_name,
-                "status": "COOKED",
-                "is_set": item.parent_id is not None,
-                "set_menu_name": set_menu_name,
-                "parent_order_item_id": item.parent_id,
-                "served_at": timezone.localtime(item.served_at).isoformat() if item.served_at else None,
-                "rollback_reason": reason,
-            }]
+                group_name = f"booth_{booth_id}.order"
+                channel_layer = get_channel_layer()
 
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_order_update",
-                    "data": {
-                        "order_id": order.pk,
-                        "items": items_payload,
-                    },
-                }
-            )
-            
-            # 메뉴 집계 갱신
-            async_to_sync(channel_layer.group_send)(
-                group_name,
-                {
-                    "type": "admin_menu_aggregation",
-                    "data": {}
-                }
-            )
-        except Exception as e:
-            logger.error(f"[ServingCancelled] WebSocket 전송 실패: {e}")
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_order_update",
+                        "data": {
+                            "order_id": order_pk,
+                            "items": items_payload,
+                        },
+                    }
+                )
+                from order.cache import query_menu_aggregation
+                async_to_sync(channel_layer.group_send)(
+                    group_name,
+                    {
+                        "type": "admin_menu_aggregation",
+                        "data": query_menu_aggregation(booth_id),
+                    }
+                )
+            except Exception:
+                logger.warning("[ServingCancelled] WebSocket 전송 실패", exc_info=True)
 
-        # 테이블 WebSocket 브로드캐스트
-        try:
-            from table.services import OrderBroadcastService
-            OrderBroadcastService.broadcast_order_update(
-                booth_id, table_num, order.table_usage_id
-            )
-        except Exception as e:
-            logger.error(f"[ServingCancelled] 테이블 WS 브로드캐스트 실패: {e}")
+        def _task_table_broadcast():
+            try:
+                from table.services import OrderBroadcastService
+                OrderBroadcastService.broadcast_order_update(
+                    booth_id, table_num, table_usage_id
+                )
+            except Exception:
+                logger.warning("[ServingCancelled] 테이블 WS 브로드캐스트 실패", exc_info=True)
+
+        def _after_commit_runner():
+            for t in (_task_admin_ws, _task_table_broadcast):
+                try:
+                    t()
+                except Exception:
+                    logger.exception("[ServingCancelled] after_commit task failed")
+
+        transaction.on_commit(_after_commit_runner)
 
         return {
             "result": "success",

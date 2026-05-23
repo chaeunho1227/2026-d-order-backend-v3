@@ -27,6 +27,28 @@ class JWTCookieMiddleware:
         return self.get_response(request)
 
 
+class StaleCookiePurgeMiddleware:
+    """모든 HTTP 응답에 옛 도메인 잔재 쿠키 expire를 자동 부착한다.
+
+    과거 `Domain=.dorder-api.shop` 등 부모 도메인으로 발급된 쿠키가
+    브라우저에 남아있으면 host-only 쿠키와 동시 전송되어 CSRF 등 인증 실패
+    원인이 된다. login/refresh/csrf-token/logout endpoint에만 정리를 부착하면
+    해당 endpoint에 도달조차 못하는 사용자(예: 첫 진입 GET에서 403)는
+    복구 기회가 없으므로, 응답 전반에 자동 부착.
+
+    클라이언트가 한 번 정리되면 STALE_PURGE_MARKER 쿠키가 set되고,
+    이후 요청은 cleanup을 건너뛴다.
+    """
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        response = self.get_response(request)
+        from authentication.utils import clear_stale_domain_cookies
+        clear_stale_domain_cookies(response, request)
+        return response
+
+
 @sync_to_async(thread_sensitive=True)
 def get_user_from_token(token_str):
     try:
@@ -34,10 +56,10 @@ def get_user_from_token(token_str):
         token = AccessToken(token_str)
         user = User.objects.get(id=token['user_id'])
         session_id = token.get('session_id')
-        logger.debug(f"[JWTWebSocketMiddleware] Token OK → user={user}, session_id={session_id}")
+        logger.debug("[JWTWebSocketMiddleware] Token OK → user=%s, session_id=%s", user, session_id)
         return user, session_id
     except Exception as e:
-        logger.error(f"[JWTWebSocketMiddleware] Invalid token: {e}", exc_info=True)
+        logger.error("[JWTWebSocketMiddleware] Invalid token: %s", e, exc_info=True)
         return None, None
 
 
@@ -61,7 +83,7 @@ class JWTWebSocketMiddleware(BaseMiddleware):
             if user:
                 scope["user"] = user
                 scope["session_id"] = session_id
-                logger.info(f"[JWTWebSocketMiddleware] Token OK → user set: {user}, session_id={session_id}")
+                logger.info("[JWTWebSocketMiddleware] Token OK → user set: %s, session_id=%s", user, session_id)
             else:
                 logger.warning("[JWTWebSocketMiddleware] Token provided but no valid user found")
         else:
