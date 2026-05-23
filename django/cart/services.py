@@ -13,6 +13,9 @@ from .models import *
 
 PENDING_TTL_MINUTES = 3
 
+import logging
+logger = logging.getLogger(__name__)
+
 class CartError(Exception):
     def __init__(self, message, error_code="CART_ERROR", detail=None, available_stock=None, status_code=400):
         super().__init__(message)
@@ -87,6 +90,10 @@ def _restore_if_pending_expired(cart: Cart) -> bool:
     if not cart.is_pending_expired():
         return False
 
+    logger.info(
+        f"[Cart] PENDING_RESTORED table_usage_id={cart.table_usage_id} "
+        f"expired_at={cart.pending_expires_at}"
+    )
     cart.status = Cart.Status.ACTIVE
     cart.pending_expires_at = None
     cart.save(update_fields=["status", "pending_expires_at"])
@@ -278,8 +285,14 @@ def get_or_create_cart_by_table_usage(table_usage_id: int) -> Cart:
     table_usage = get_object_or_404(TableUsage, id=table_usage_id)
     _ensure_table_usage_alive(table_usage)
 
-    cart, _ = Cart.objects.select_for_update().get_or_create(table_usage=table_usage)
+    cart, created = Cart.objects.select_for_update().get_or_create(table_usage=table_usage)
 
+    logger.info(
+        f"[Cart] {'CREATED' if created else 'FETCHED'} "
+        f"table_usage_id={table_usage_id} status={cart.status} "
+        f"pending_expires_at={cart.pending_expires_at}"
+    )
+    
     restored = _restore_if_pending_expired(cart)
 
     if restored:
@@ -302,6 +315,11 @@ def add_to_cart(*, table_usage_id: int, type: str, quantity: int, menu_id: int =
     cart = get_or_create_cart_by_table_usage(table_usage_id)
 
     if cart.status != Cart.Status.ACTIVE:
+        logger.warning(
+            f"[Cart] CART_NOT_ACTIVE on add_to_cart "
+            f"table_usage_id={table_usage_id} status={cart.status} "
+            f"pending_expires_at={cart.pending_expires_at}"
+        )
         raise CartError(
             "현재 장바구니는 수정할 수 없는 상태입니다.",
             "CART_NOT_ACTIVE",
@@ -435,7 +453,18 @@ def update_item_quantity(*, table_usage_id: int, cart_item_id: int, quantity: in
         table_usage_id=table_usage_id,
     )
 
+    logger.info(
+        f"[Cart] update_item_quantity called "
+        f"table_usage_id={table_usage_id} status={cart.status} "
+        f"pending_expires_at={cart.pending_expires_at}"
+    )
+
     if cart.status != Cart.Status.ACTIVE:
+        logger.warning(
+            f"[Cart] CART_NOT_ACTIVE on update_item_quantity "
+            f"table_usage_id={table_usage_id} status={cart.status} "
+            f"pending_expires_at={cart.pending_expires_at}"
+        )
         raise CartError(
             "현재 장바구니는 수정할 수 없는 상태입니다.",
             "CART_NOT_ACTIVE",
@@ -508,6 +537,11 @@ def delete_item(*, table_usage_id: int, cart_item_id: int):
     cart = get_or_create_cart_by_table_usage(table_usage_id)
 
     if cart.status != Cart.Status.ACTIVE:
+        logger.warning(
+            f"[Cart] CART_NOT_ACTIVE on delete_item "
+            f"table_usage_id={table_usage_id} status={cart.status} "
+            f"pending_expires_at={cart.pending_expires_at}"
+        )
         raise CartError(
             "현재 장바구니는 수정할 수 없는 상태입니다.",
             "CART_NOT_ACTIVE",
@@ -530,6 +564,12 @@ def delete_item(*, table_usage_id: int, cart_item_id: int):
 def enter_payment_info(*, table_usage_id: int):
     cart = get_or_create_cart_by_table_usage(table_usage_id)
 
+    logger.info(
+        f"[Cart] enter_payment_info called "
+        f"table_usage_id={table_usage_id} status={cart.status} "
+        f"pending_expires_at={cart.pending_expires_at}"
+    )
+    
     if not cart.items.exists():
         raise CartError(
             "장바구니가 비어 있습니다.",
@@ -538,6 +578,11 @@ def enter_payment_info(*, table_usage_id: int):
         )
 
     if cart.status != Cart.Status.ACTIVE:
+        logger.warning(
+            f"[Cart] CART_NOT_ACTIVE on enter_payment_info "
+            f"table_usage_id={table_usage_id} status={cart.status} "
+            f"pending_expires_at={cart.pending_expires_at}"
+        )
         raise CartError(
             "현재 결제를 진행할 수 없는 상태입니다.",
             "CART_NOT_ACTIVE",
@@ -581,6 +626,12 @@ def enter_payment_info(*, table_usage_id: int):
     cart.pending_expires_at = timezone.now() + timedelta(minutes=PENDING_TTL_MINUTES)
     cart.save(update_fields=["status", "pending_expires_at"])
 
+    logger.info(
+        f"[Cart] SET_PENDING "
+        f"table_usage_id={table_usage_id} "
+        f"expires_at={cart.pending_expires_at}"
+    )
+    
     booth = cart.table_usage.table.booth
 
     payment = {

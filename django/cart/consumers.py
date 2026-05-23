@@ -8,6 +8,8 @@ from .models import Cart, CartItem
 from .services import *
 from .services_ws import *
 
+import logging
+logger = logging.getLogger(__name__)
 
 class CustomerCartConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
     """
@@ -20,6 +22,7 @@ class CustomerCartConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
         is_valid = await self._validate_table_usage()
 
         if not is_valid:
+            logger.warning(f"[CartWS] CONNECT REJECTED table_usage_id={self.table_usage_id}")
             await self.close(code=4004)
             return
 
@@ -32,13 +35,12 @@ class CustomerCartConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
 
         await self.accept()
 
-        print(f"[CartWS] CONNECT: {self.channel_name}")
+        logger.info(f"[CartWS] CONNECT table_usage_id={self.table_usage_id} channel={self.channel_name}")
 
         await self.send_cart_snapshot()
 
     async def disconnect(self, close_code):
-
-        print(f"[CartWS] DISCONNECT: {self.channel_name}, code={close_code}")
+        logger.info(f"[CartWS] DISCONNECT table_usage_id={self.table_usage_id} channel={self.channel_name} code={close_code}")
 
         if hasattr(self, "group_name"):
             await self.channel_layer.group_discard(
