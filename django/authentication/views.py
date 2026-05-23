@@ -242,14 +242,11 @@ class CsrfTokenView(APIView):
     GET /api/v3/auth/csrf-token/
 
     POST/PUT/PATCH/DELETE 요청 시 X-CSRFToken 헤더에 포함 필요
-
-    async 로 둬서 워커당 sync main thread 큐를 점유하지 않음.
-    무거운 sync view 가 큐를 막아도 CSRF 발급은 영향받지 않게 격리.
     """
     permission_classes = [AllowAny]
     authentication_classes = []
 
-    async def get(self, request):
+    def get(self, request):
         csrf_token = get_token(request)
         return Response({
             "csrfToken": csrf_token
