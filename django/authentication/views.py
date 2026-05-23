@@ -234,6 +234,7 @@ class TokenRefreshAPIView(APIView):
             }, status=status.HTTP_401_UNAUTHORIZED)
 
 
+@method_decorator(ensure_csrf_cookie, name='get')
 class CsrfTokenView(APIView):
     """
     CSRF 토큰 발급
@@ -244,12 +245,9 @@ class CsrfTokenView(APIView):
     """
     permission_classes = [AllowAny]
     authentication_classes = []
-    
+
     def get(self, request):
-        """CSRF 토큰 발급"""
         csrf_token = get_token(request)
-        response = Response({
+        return Response({
             "csrfToken": csrf_token
         }, status=status.HTTP_200_OK)
-        # (옛 도메인 잔재 쿠키 정리는 StaleCookiePurgeMiddleware가 응답 전반에 자동 처리)
-        return response
