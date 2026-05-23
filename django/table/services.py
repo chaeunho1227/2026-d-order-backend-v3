@@ -352,7 +352,7 @@ class TableService:
             # ID 기준으로 재조회
             tables = Table.objects.filter(pk__in=table_ids)
 
-        found_count = len(table_ids)
+        found_count = tables.count()
 
         now_time = now()
         active_usages = TableUsage.objects.filter(
