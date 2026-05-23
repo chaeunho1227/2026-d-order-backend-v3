@@ -43,7 +43,7 @@ class MenuService:
         - 이미지 파일도 함께 삭제
         """
         # 1. 활성 주문(COOKING, COOKED, SERVING) 확인 — SERVED는 삭제 허용
-        blocking_statuses = ['COOKING', 'cooking', 'COOKED', 'cooked', 'SERVING', 'serving']
+        blocking_statuses = ['COOKING', 'COOKED', 'SERVING']
         active_order_item = OrderItem.objects.filter(
             menu=menu,
             status__in=blocking_statuses
@@ -162,7 +162,7 @@ class SetMenuService:
         """
         # 1. 활성 주문(COOKING, COOKED, SERVING) 확인 — SERVED는 삭제 허용
         # 부모 OrderItem은 status가 직접 업데이트되지 않으므로 자식(구성품) 기준으로 판단
-        blocking_statuses = ['COOKING', 'cooking', 'COOKED', 'cooked', 'SERVING', 'serving']
+        blocking_statuses = ['COOKING', 'COOKED', 'SERVING']
         blocking_child = OrderItem.objects.filter(
             parent__setmenu=set_menu,
             status__in=blocking_statuses
