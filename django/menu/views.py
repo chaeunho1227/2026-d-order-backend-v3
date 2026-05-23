@@ -269,7 +269,7 @@ class BoothMenuListAPIView(APIView):
             
             # set_items 구성
             set_items = []
-            for item in setmenu.items.all():
+            for item in items:
                 set_items.append({
                     "menu_id": item.menu.pk,
                     "quantity": item.quantity,
@@ -343,9 +343,9 @@ class UserMenuListAPIView(APIView):
         set_menus = SetMenu.objects.filter(booth=booth).prefetch_related('items__menu').order_by('-price')
         set_data = []
         for setmenu in set_menus:
-            origin_price = sum([item.menu.price * item.quantity for item in setmenu.items.all()])
-            discount_rate = round((origin_price - setmenu.price) / origin_price * 100, 1) if origin_price > 0 else 0.0
             items = list(setmenu.items.all())
+            origin_price = sum(item.menu.price * item.quantity for item in items)
+            discount_rate = round((origin_price - setmenu.price) / origin_price * 100, 1) if origin_price > 0 else 0.0
             is_soldout = any(item.menu.stock == 0 for item in items)
             min_stock = min((item.menu.stock // item.quantity for item in items), default=0)
             set_data.append({
@@ -380,7 +380,7 @@ class UserMenuListAPIView(APIView):
             drink_data.append({
                 "id": drink.pk,
                 "name": drink.name,
-                "price": int(drink.price),
+                "price": drink.price,
                 "description": drink.description or "",
                 "image": drink.image.url if drink.image else None,
                 "stock": drink.stock,
