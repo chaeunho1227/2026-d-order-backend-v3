@@ -24,11 +24,7 @@ class Menu(models.Model):
         default=Category.MENU
     )
     description = models.CharField(max_length=30, blank=True, null=True)
-    price = models.DecimalField(
-        max_digits=10,
-        decimal_places=0,
-        validators=[MinValueValidator(0)]
-    )
+    price = models.IntegerField(validators=[MinValueValidator(0)])
     stock = models.IntegerField(
         default=0,
         validators=[MinValueValidator(0)]

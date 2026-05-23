@@ -235,7 +235,7 @@ class BoothMenuListAPIView(APIView):
             fee_item = {
                 "id": fee_menu.pk,
                 "name": fee_menu.name,
-                "price": int(fee_menu.price),
+                "price": fee_menu.price,
                 "category": fee_menu.category,
                 "description": fee_menu.description or "",
                 "image": fee_menu.image.url if fee_menu.image else None,
@@ -251,7 +251,7 @@ class BoothMenuListAPIView(APIView):
             data.append({
                 "id": menu.pk,
                 "name": menu.name,
-                "price": int(menu.price),
+                "price": menu.price,
                 "category": menu.category,
                 "description": menu.description or "",
                 "image": menu.image.url if menu.image else None,
@@ -273,7 +273,7 @@ class BoothMenuListAPIView(APIView):
                 set_items.append({
                     "menu_id": item.menu.pk,
                     "quantity": item.quantity,
-                    "base_price": int(item.menu.price),
+                    "base_price": item.menu.price,
                     "stock": item.menu.stock
                 })
             
@@ -333,7 +333,7 @@ class UserMenuListAPIView(APIView):
             fee_data = [{
                 "id": fee_menu.pk,
                 "name": fee_menu.name,
-                "price": int(fee_menu.price),
+                "price": fee_menu.price,
                 "description": fee_menu.description or "",
                 "image": fee_menu.image.url if fee_menu.image else None,
                 "stock": fee_menu.stock,
@@ -367,7 +367,7 @@ class UserMenuListAPIView(APIView):
             menu_data.append({
                 "id": menu.pk,
                 "name": menu.name,
-                "price": int(menu.price),
+                "price": menu.price,
                 "description": menu.description or "",
                 "image": menu.image.url if menu.image else None,
                 "stock": menu.stock,
