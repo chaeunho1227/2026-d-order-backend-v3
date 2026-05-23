@@ -45,6 +45,13 @@ class Order(models.Model):
 
 
 class OrderItem(models.Model):
+    class Status(models.TextChoices):
+        COOKING = "COOKING", "조리중"
+        COOKED = "COOKED", "조리완료"
+        SERVING = "SERVING", "서빙중"
+        SERVED = "SERVED", "서빙완료"
+        CANCELLED = "CANCELLED", "취소"
+
     id = models.BigAutoField(primary_key=True)
     order = models.ForeignKey(
         Order,
@@ -75,7 +82,7 @@ class OrderItem(models.Model):
     )
     quantity = models.IntegerField()
     fixed_price = models.IntegerField()
-    status = models.CharField(max_length=20)  # cooking, cooked, serving, served, cancelled
+    status = models.CharField(max_length=20, choices=Status.choices)
     created_at = models.DateTimeField(auto_now_add=True)
     cooked_at = models.DateTimeField(null=True, blank=True)
     served_at = models.DateTimeField(null=True, blank=True)

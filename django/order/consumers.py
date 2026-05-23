@@ -286,9 +286,9 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
                 Q(items__setmenu__isnull=False) |
                 Q(items__menu__category__in=["MENU", "DRINK"])
             ).distinct().select_related("table_usage__table").order_by("created_at")
-            count = qs.count()
-            logger.debug(f"[Order WS] DB 결과: {count}개 주문")
-            return list(qs)
+            result = list(qs)
+            logger.debug(f"[Order WS] DB 결과: {len(result)}개 주문")
+            return result
         
         return await sync_to_async(_query)()
 
@@ -298,7 +298,7 @@ class AdminOrderManagementConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsu
         리프 아이템만 대상 (세트메뉴 부모 제외, 자식 OrderItem + 일반 메뉴).
         조리중(COOKING) 상태인 것만 대상. 조리완료되면 집계에서 제외됨.
         """
-        active_statuses = ["COOKING", "cooking"]  # 대소문자 혼용 대응
+        active_statuses = ["COOKING"]
 
         def _query():
             # 리프 아이템만 집계: 메뉴가 있는 아이템들 (세트메뉴 부모 제외, 자식 + 일반 메뉴)

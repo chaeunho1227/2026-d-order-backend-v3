@@ -1014,7 +1014,7 @@ class OrderService:
             OrderItem.objects
             .filter(
                 order__table_usage_id__in=table_usage_ids,
-                status__in=["COOKED", "cooked", "SERVING", "serving"],
+                status__in=["COOKED", "SERVING"],
             )
             .select_related("menu", "setmenu", "parent__setmenu")
         )
