@@ -28,6 +28,10 @@ class CustomerCartConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
         validation = await self._validate_table_usage()
 
         if not validation["is_valid"]:
+            logger.warning(
+                f"[CartWS] CONNECT REJECTED table_usage_id={self.table_usage_id} "
+                f"reason={validation['error_code']}"
+            )
 
             await self.accept()
 
@@ -51,7 +55,10 @@ class CustomerCartConsumer(KoreanAsyncJsonMixin, AsyncJsonWebsocketConsumer):
 
         await self.accept()
 
-        logger.info(f"[CartWS] CONNECT: {self.channel_name}, table_usage_id={self.table_usage_id}")
+        logger.info(
+            f"[CartWS] CONNECT table_usage_id={self.table_usage_id} "
+            f"channel={self.channel_name}"
+        )
 
         await self.send_json({
             "type": "SUBSCRIBED",
