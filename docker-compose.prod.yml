@@ -185,6 +185,7 @@ services:
       --max-requests 1000
       --max-requests-jitter 100
       --access-logfile -
+      --logger-class project.gunicorn_logger.HealthFilteringLogger
       --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
@@ -259,6 +260,7 @@ services:
       --max-requests 1000
       --max-requests-jitter 100
       --access-logfile -
+      --logger-class project.gunicorn_logger.HealthFilteringLogger
       --forwarded-allow-ips '*'
     environment:
       ENVIRONMENT: production
