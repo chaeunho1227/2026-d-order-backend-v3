@@ -63,6 +63,13 @@ def get_user_from_token(token_str):
         return None, None
 
 
+# 고객용(인증 불필요) WebSocket endpoint prefix.
+# 여기 매칭되면 access_token 부재 시 경고 로깅 생략 (정상 흐름).
+PUBLIC_WS_PATH_PREFIXES = (
+    "/ws/django/cart/",
+)
+
+
 class JWTWebSocketMiddleware(BaseMiddleware):
     """
     WebSocket 연결용.
@@ -87,6 +94,9 @@ class JWTWebSocketMiddleware(BaseMiddleware):
             else:
                 logger.warning("[JWTWebSocketMiddleware] Token provided but no valid user found")
         else:
-            logger.warning("[JWTWebSocketMiddleware] No token in cookie")
+            path = scope.get("path", "")
+            is_public = any(path.startswith(p) for p in PUBLIC_WS_PATH_PREFIXES)
+            if not is_public:
+                logger.warning("[JWTWebSocketMiddleware] No token in cookie | path=%s", path)
 
         return await super().__call__(scope, receive, send)
