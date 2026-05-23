@@ -150,9 +150,18 @@ class BoothService:
 
         # 4. 모든 TableUsage 삭제
         #    Cart.table_usage가 CASCADE이므로 Cart도 함께 삭제됨
+        #    CartCouponApply도 Cart → CASCADE로 함께 삭제됨
         deleted_count, _ = TableUsage.objects.filter(table__booth=booth).delete()
 
-        # 5. 커밋 후: 매출 캐시 무효화 + 총매출 0 WebSocket 전송
+        # 5. 이 부스의 쿠폰 코드 사용 이력 초기화
+        #    결제 시 CouponCode.used_at이 설정되는데, 포맷 시 주문/카트는
+        #    CASCADE로 삭제되지만 CouponCode.used_at은 직접 초기화해야 함
+        from coupon.models import CouponCode
+        CouponCode.objects.filter(
+            coupon__booth=booth, used_at__isnull=False
+        ).update(used_at=None)
+
+        # 6. 커밋 후: 매출 캐시 무효화 + 총매출 0 WebSocket 전송
         def _send_ws_after_commit():
             try:
                 from order.cache import invalidate_today_revenue
