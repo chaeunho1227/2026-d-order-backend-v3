@@ -184,3 +184,177 @@ class BoothService:
         transaction.on_commit(_send_ws_after_commit)
 
         return deleted_count
+
+
+class BoothStatisticsService:
+
+    @staticmethod
+    def get_statistics(booth):
+        from django.db.models import Sum, Avg, Count
+        from django.db.models.functions import TruncDate, ExtractHour
+        from django.utils import timezone
+        from order.models import Order, OrderItem
+        from table.models import TableUsage
+
+        tz = timezone.get_current_timezone()
+
+        booth_orders = Order.objects.filter(
+            table_usage__table__booth=booth
+        ).exclude(order_status='CANCELLED')
+
+        booth_items = OrderItem.objects.filter(
+            order__table_usage__table__booth=booth
+        ).exclude(status='CANCELLED').exclude(order__order_status='CANCELLED')
+
+        # 총 주문 건수
+        total_orders = booth_orders.count()
+
+        # 평균 조리시간 (분)
+        cooked = list(
+            booth_items.filter(cooked_at__isnull=False)
+            .values_list('created_at', 'cooked_at')
+        )
+        avg_cooking_minutes = (
+            round(sum((c - a).total_seconds() for a, c in cooked) / len(cooked) / 60, 1)
+            if cooked else None
+        )
+
+        # 평균 서빙시간 (분)
+        served = list(
+            booth_items.filter(served_at__isnull=False, status='SERVED')
+            .values_list('created_at', 'served_at')
+        )
+        avg_serving_minutes = (
+            round(sum((s - a).total_seconds() for a, s in served) / len(served) / 60, 1)
+            if served else None
+        )
+
+        # 평균 테이블 이용시간 (분)
+        usage_avg = TableUsage.objects.filter(
+            table__booth=booth, usage_minutes__isnull=False
+        ).aggregate(avg=Avg('usage_minutes'))
+        avg_table_usage_minutes = (
+            round(usage_avg['avg'], 1) if usage_avg['avg'] is not None else None
+        )
+
+        # 날짜별 매출 (operate_dates 기반)
+        daily_revenue_map = {d: 0 for d in booth.operate_dates}
+        for row in (
+            booth_orders
+            .annotate(order_date=TruncDate('created_at', tzinfo=tz))
+            .values('order_date')
+            .annotate(revenue=Sum('order_price'))
+        ):
+            key = row['order_date'].strftime('%Y-%m-%d')
+            daily_revenue_map[key] = row['revenue'] or 0
+        daily_revenue = [
+            {'date': k, 'revenue': v} for k, v in daily_revenue_map.items()
+        ]
+
+        # 시간별 매출 (17~23시)
+        HOURS = list(range(17, 24))
+        hourly_map = {h: 0 for h in HOURS}
+        for row in (
+            booth_orders
+            .annotate(hour=ExtractHour('created_at', tzinfo=tz))
+            .filter(hour__in=HOURS)
+            .values('hour')
+            .annotate(revenue=Sum('order_price'))
+        ):
+            hourly_map[row['hour']] = row['revenue'] or 0
+        hourly_revenue = [
+            {'hour': f"{h:02d}:00", 'revenue': hourly_map[h]} for h in HOURS
+        ]
+
+        # 피크타임 (주문 건수 기준)
+        peak_row = (
+            booth_orders
+            .annotate(hour=ExtractHour('created_at', tzinfo=tz))
+            .values('hour')
+            .annotate(cnt=Count('id'))
+            .order_by('-cnt')
+            .first()
+        )
+        peak_time = f"{peak_row['hour']:02d}:00" if peak_row else None
+
+        menu_stats = BoothStatisticsService._get_menu_stats(booth)
+
+        return {
+            'booth_stats': {
+                'total_orders': total_orders,
+                'avg_cooking_minutes': avg_cooking_minutes,
+                'avg_serving_minutes': avg_serving_minutes,
+                'avg_table_usage_minutes': avg_table_usage_minutes,
+                'table_count': booth.table_max_cnt,
+                'total_revenue': booth.total_revenues,
+                'daily_revenue': daily_revenue,
+                'hourly_revenue': hourly_revenue,
+                'peak_time': peak_time,
+            },
+            'menu_stats': menu_stats,
+        }
+
+    @staticmethod
+    def _get_menu_stats(booth):
+        from order.models import OrderItem
+
+        base_qs = (
+            OrderItem.objects.filter(
+                order__table_usage__table__booth=booth,
+                parent=None,
+            )
+            .exclude(status='CANCELLED')
+            .exclude(order__order_status='CANCELLED')
+            .select_related('menu', 'setmenu')
+        )
+
+        menu_data = {}
+
+        for item in base_qs:
+            if item.menu_id and item.menu.category == 'FEE':
+                continue
+
+            if item.menu_id:
+                key = ('menu', item.menu_id)
+                name = item.menu.name
+                stock = item.menu.stock
+            elif item.setmenu_id:
+                key = ('set', item.setmenu_id)
+                name = item.setmenu.name
+                stock = None
+            else:
+                continue
+
+            if key not in menu_data:
+                menu_data[key] = {
+                    'menu_id': item.menu_id,
+                    'name': name,
+                    'stock': stock,
+                    'sold_quantity': 0,
+                    'total_revenue': 0,
+                    '_serving_secs': [],
+                }
+
+            menu_data[key]['sold_quantity'] += item.quantity
+            menu_data[key]['total_revenue'] += item.fixed_price * item.quantity
+            if item.served_at and item.status == 'SERVED':
+                secs = (item.served_at - item.created_at).total_seconds()
+                menu_data[key]['_serving_secs'].append(secs)
+
+        result = []
+        for data in menu_data.values():
+            secs = data.pop('_serving_secs')
+            data['avg_serving_minutes'] = (
+                round(sum(secs) / len(secs) / 60, 1) if secs else None
+            )
+            result.append(data)
+
+        with_stock = [m for m in result if m['stock'] is not None]
+        with_serving = [m for m in result if m['avg_serving_minutes'] is not None]
+
+        return {
+            'least_sold': sorted(result, key=lambda m: m['sold_quantity'])[:5],
+            'slowest_served': sorted(with_serving, key=lambda m: m['avg_serving_minutes'], reverse=True)[:5],
+            'least_stock': sorted(with_stock, key=lambda m: m['stock'])[:5],
+            'highest_revenue': sorted(result, key=lambda m: m['total_revenue'], reverse=True)[:5],
+        }
