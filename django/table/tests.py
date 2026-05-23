@@ -711,7 +711,10 @@ class TableConsumerConnectTest(TransactionTestCase):
         await communicator.disconnect()
 
 
-@override_settings(STORAGES=IN_MEMORY_STORAGES)
+@override_settings(
+    STORAGES=IN_MEMORY_STORAGES,
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+)
 class TableConsumerEventTest(TransactionTestCase):
     """TableMixin 이벤트 핸들러 테스트 (group_send → 클라이언트 수신)"""
 
@@ -823,7 +826,10 @@ class TableConsumerEventTest(TransactionTestCase):
         await communicator.disconnect()
 
 
-@override_settings(STORAGES=IN_MEMORY_STORAGES)
+@override_settings(
+    STORAGES=IN_MEMORY_STORAGES,
+    CHANNEL_LAYERS={"default": {"BACKEND": "channels.layers.InMemoryChannelLayer"}},
+)
 class TableConsumerServiceIntegrationTest(TransactionTestCase):
     """Service → WebSocket 통합 테스트 (transaction.on_commit 포함)"""
 
