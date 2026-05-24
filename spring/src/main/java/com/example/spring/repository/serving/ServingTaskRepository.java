@@ -15,6 +15,8 @@ public interface ServingTaskRepository extends JpaRepository<ServingTask, Long> 
      */
     List<ServingTask> findByBoothIdAndStatusOrderByRequestedAtAsc(Long boothId, ServingStatus status);
 
+    List<ServingTask> findByBoothIdAndStatusInOrderByRequestedAtAsc(Long boothId, List<ServingStatus> statuses);
+
     Optional<ServingTask> findFirstByBoothIdAndOrderItemIdAndStatusIn(Long boothId, Long orderItemId, List<ServingStatus> statuses);
 
     long deleteByBoothIdAndOrderItemIdAndStatusIn(Long boothId, Long orderItemId, List<ServingStatus> statuses);

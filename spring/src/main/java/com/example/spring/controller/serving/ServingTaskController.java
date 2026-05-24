@@ -1,5 +1,6 @@
 package com.example.spring.controller.serving;
 
+import com.example.spring.config.JwtUtil;
 import com.example.spring.domain.serving.ServingTask;
 import com.example.spring.dto.serving.response.ServingFilterOptionsData;
 import com.example.spring.dto.serving.response.ServingFilterOptionsResponse;
@@ -21,6 +22,7 @@ import java.util.Map;
 public class ServingTaskController {
 
     private final ServingTaskService servingTaskService;
+    private final JwtUtil jwtUtil;
 
     /**
      * 신규 운영자용 API
@@ -35,9 +37,11 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        List<ServingTask> tasks = servingTaskService.getPendingServingCalls(boothId);
+        String currentUserIdentity = extractCurrentUserIdentity(request);
+
+        List<ServingTask> tasks = servingTaskService.getActiveServingCalls(boothId);
         List<ServingTaskResponse> response = tasks.stream()
-                .map(ServingTaskResponse::from)
+                .map(task -> ServingTaskResponse.from(task, currentUserIdentity, true))
                 .toList();
 
         return ResponseEntity.ok(response);
@@ -58,9 +62,11 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        List<ServingTask> tasks = servingTaskService.getPendingServingCalls(boothId);
+        String currentUserIdentity = extractCurrentUserIdentity(request);
+
+        List<ServingTask> tasks = servingTaskService.getActiveServingCalls(boothId);
         List<ServingTaskResponse> response = tasks.stream()
-                .map(ServingTaskResponse::from)
+                .map(task -> ServingTaskResponse.from(task, currentUserIdentity, true))
                 .toList();
 
         return ResponseEntity.ok(response);
@@ -92,7 +98,7 @@ public class ServingTaskController {
     @PostMapping("/catchcall")
     public ResponseEntity<String> catchCall(
             @RequestParam Long taskId,
-            HttpServletRequest httpRequest // 🌟 @RequestBody CatchCallRequest 제거됨
+            HttpServletRequest httpRequest
     ) {
         Long boothId = (Long) httpRequest.getAttribute(ServerApiJwtFilter.ATTR_BOOTH_ID);
 
@@ -100,8 +106,8 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        // 🌟 3번째 인자(catchedBy) 제거됨
-        servingTaskService.catchCall(taskId, boothId);
+        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
+        servingTaskService.catchCall(taskId, boothId, currentUserIdentity);
         return ResponseEntity.ok("서빙 요청이 수락되었습니다.");
     }
 
@@ -116,7 +122,8 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        servingTaskService.completeCall(taskId, boothId);
+        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
+        servingTaskService.completeCall(taskId, boothId, currentUserIdentity);
         return ResponseEntity.ok("서빙이 완료되었습니다.");
     }
 
@@ -131,7 +138,21 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        servingTaskService.cancelCall(taskId, boothId);
+        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
+        servingTaskService.cancelCall(taskId, boothId, currentUserIdentity);
         return ResponseEntity.ok("서빙 수락이 취소되었습니다.");
+    }
+
+    private String extractCurrentUserIdentity(HttpServletRequest request) {
+        String accessToken = (String) request.getAttribute("ACCESS_TOKEN");
+        if (accessToken == null || accessToken.isBlank()) {
+            return "unknown";
+        }
+
+        String username = jwtUtil.getUsernameFromToken(accessToken);
+        if (username == null || username.isBlank()) {
+            return "unknown";
+        }
+        return username;
     }
 }
