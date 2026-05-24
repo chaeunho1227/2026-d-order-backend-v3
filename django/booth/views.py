@@ -148,7 +148,7 @@ class BoothAdBannerAPIView(APIView):
 
         booth_details = [
             {
-                "boothName": booth.name,
+                "boothName": booth.host_name,
                 "location": booth.location.get(date_str, ""),
                 "totalTable": booth.total_table,
                 "remainingTable": booth.remaining_table,
