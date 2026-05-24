@@ -103,12 +103,12 @@ class AuthService:
         try:
             User.objects.get(username=username)
         except User.DoesNotExist:
-            raise ValueError("일치하지 않는 아이디예요.")
+            raise ValueError("아이디 및 비밀번호가 일치하지 않아요.")
 
         # 2. 비밀번호 확인
         user = authenticate(username=username, password=password)
         if not user:
-            raise ValueError("일치하지 않는 비밀번호예요.")
+            raise ValueError("아이디 및 비밀번호가 일치하지 않아요.")
 
         return user
 
