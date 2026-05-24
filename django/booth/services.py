@@ -237,8 +237,7 @@ class BoothStatisticsService:
             round(usage_avg['avg'], 1) if usage_avg['avg'] is not None else None
         )
 
-        # 날짜별 매출 (operate_dates 기반)
-        daily_revenue_map = {d: 0 for d in booth.operate_dates}
+        daily_revenue_map = {d: 0 for d in booth.location.keys()}
         for row in (
             booth_orders
             .annotate(order_date=TruncDate('created_at', tzinfo=tz))

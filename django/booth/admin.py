@@ -15,7 +15,7 @@ class BoothAdmin(admin.ModelAdmin):
         'location',
         'has_qr_image',
     )
-    search_fields = ('user__username', 'name', 'account', 'depositor', 'location')
+    search_fields = ('user__username', 'name', 'account', 'depositor')
     list_filter = ('seat_type', 'bank')
     readonly_fields = ('qr_image_preview',)
 
@@ -33,7 +33,7 @@ class BoothAdmin(admin.ModelAdmin):
             'fields': ('bank', 'account', 'depositor'),
         }),
         ('운영 정보', {
-            'fields': ('operate_dates', 'total_revenues'),
+            'fields': ('total_revenues',),
         }),
         ('QR 코드', {
             'fields': ('qr_image', 'qr_image_preview'),
