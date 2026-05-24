@@ -293,8 +293,10 @@ class StaleCookiePurgeMiddlewareTest(APITestCase):
         self.stale_domains = _STALE_COOKIE_DOMAINS
         self.stale_names = _STALE_COOKIE_NAMES
         self.marker_name = STALE_PURGE_MARKER
-        # 어떤 GET endpoint든 응답 전반에 미들웨어가 작동해야 함
-        self.any_url = '/api/v3/django/auth/csrf-token/'
+        # 어떤 GET endpoint든 응답 전반에 미들웨어가 작동해야 함.
+        # /csrf-token/ 은 STALE_CLEANUP_SKIP_PATHS 에 들어있어 별도 테스트에서 검증.
+        self.any_url = '/health/'
+        self.skipped_url = '/api/v3/django/auth/csrf-token/'
 
     def test_attaches_expire_morsel_for_each_domain_name_pair(self):
         """마커가 없는 요청 응답에 (도메인 × 이름) 조합 expire morsel이 모두 부착된다."""
@@ -336,4 +338,27 @@ class StaleCookiePurgeMiddlewareTest(APITestCase):
                     response.cookies,
                 )
         # 마커도 다시 set되지 않아야 함 (이미 있으니까)
+        self.assertNotIn(self.marker_name, response.cookies)
+
+    def test_skips_for_csrf_token_endpoint(self):
+        """/csrf-token/ 응답에는 stale cleanup 모르셀이 부착되지 않는다.
+
+        단순 cookie 파서를 쓰는 클라이언트 (Spring DjangoApiUtil 등) 가
+        진짜 csrftoken 대신 stale delete 라인의 empty 값을 읽어가는 회귀를
+        방지하기 위해 이 경로는 skip.
+        """
+        response = self.client.get(self.skipped_url)
+
+        # csrftoken 자체는 ensure_csrf_cookie 로 정상 set 되어야 함
+        self.assertIn('csrftoken', response.cookies)
+        self.assertNotEqual(response.cookies['csrftoken'].value, '')
+
+        # stale morsel 은 부착되지 않아야 함
+        for domain in self.stale_domains:
+            for name in self.stale_names:
+                self.assertNotIn(
+                    f'__stale__{name}__{domain}',
+                    response.cookies,
+                )
+        # 마커도 set 되지 않아야 함 (cleanup 자체가 skip)
         self.assertNotIn(self.marker_name, response.cookies)
