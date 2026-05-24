@@ -138,6 +138,32 @@ def broadcast_cart_event(table_usage_id: int, event_type: str, message: str):
     )
 
 
+def broadcast_cart_merge_event(rep_usage_id: int, other_usage_ids: list):
+    """테이블 병합 시 카트 WebSocket 이벤트 발행.
+
+    병합으로 삭제된 usage 클라이언트에게는 CART_MERGED + new_table_usage_id 전송하여 재연결 유도.
+    대표 usage 클라이언트에게는 병합된 전체 카트 스냅샷 전송.
+    """
+    channel_layer = get_channel_layer()
+
+    for usage_id in other_usage_ids:
+        group_name = f"table_usage_{usage_id}.cart"
+        async_to_sync(channel_layer.group_send)(
+            group_name,
+            {
+                "type": "cart_updated",
+                "event_type": "CART_MERGED",
+                "message": "테이블이 병합되어 장바구니가 통합되었습니다.",
+                "data": {
+                    "table_usage_id": usage_id,
+                    "new_table_usage_id": rep_usage_id,
+                },
+            },
+        )
+
+    broadcast_cart_event(rep_usage_id, "CART_MERGED", "테이블이 병합되어 장바구니가 통합되었습니다.")
+
+
 def broadcast_cart_reset_on_table_end(table_usage_id: int):
     """테이블 초기화로 TableUsage가 종료될 때 발행하는 경량 CART_RESET.
 
