@@ -188,6 +188,7 @@ class TokenRefreshAPIView(APIView):
                     "message": "Access 토큰 유효",
                     "data": {
                         "username": user.username,
+                        "booth_name" : user.booth.name,
                         "booth_id": user.pk,
                     }
                 }, status=status.HTTP_200_OK)
@@ -215,6 +216,7 @@ class TokenRefreshAPIView(APIView):
                 "message": "Access 토큰 재발급 완료",
                 "data": {
                     "username": tokens['user'].username,
+                    "booth_name" : tokens['user'].booth.name,
                     "booth_id": tokens['user'].pk,
                 }
             }, status=status.HTTP_200_OK)
