@@ -160,12 +160,23 @@ class CheckUsernameViewTest(APITestCase):
         self.assertFalse(response.data['data']['is_available'])
 
 
+@override_settings(STORAGES=IN_MEMORY_STORAGES)
 class AuthApiViewTest(APITestCase):
     def setUp(self):
         self.auth_url = '/api/v3/django/auth/'
         self.username = 'testuser'
         self.password = 'testpass123'
-        User.objects.create_user(username=self.username, password=self.password)
+        user = User.objects.create_user(username=self.username, password=self.password)
+        Booth.objects.create(
+            user=user,
+            name='테스트 부스',
+            account='1234567890',
+            depositor='홍길동',
+            bank='신한은행',
+            table_max_cnt=10,
+            table_limit_hours=2.0,
+            seat_type='NO',
+        )
 
     def test_login_success(self):
         """로그인 성공 테스트"""

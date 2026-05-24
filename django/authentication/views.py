@@ -60,6 +60,7 @@ class SignupAPIView(APIView):
                 "message": "회원가입이 완료되었습니다.",
                 "data": {
                     "username": user.username,
+                    "booth_name" : user.booth.name,
                     "booth_id": user.id,
                 },
             }, status=status.HTTP_201_CREATED)
@@ -134,6 +135,7 @@ class AuthAPIView(APIView):
                 "message": "로그인 성공",
                 "data": {
                     "username": user.username,
+                    "booth_name" : user.booth.name,
                     "booth_id": user.id
                 }
             }, status=status.HTTP_200_OK)
