@@ -31,7 +31,7 @@ BOOTH_CONFIGS = [
         "seat_type": "NO",
         "seat_fee_person": None,
         "seat_fee_table": None,
-        "location": "서울 강남구 테헤란로 427",
+        "location": {"2026-05-22": "서울 강남구 테헤란로 427", "2026-05-23": "서울 강남구 테헤란로 427", "2026-05-24": "서울 강남구 테헤란로 427"},
         "coupon": {"name": "10% 할인 쿠폰", "discount_type": "RATE", "discount_value": Decimal("10.00")},
         "menus": [
             {"name": "제육볶음",   "category": "MENU",  "price": 10000, "stock": 30, "description": "제육볶음"},
@@ -55,7 +55,7 @@ BOOTH_CONFIGS = [
         "seat_type": "PP",
         "seat_fee_person": 3000,
         "seat_fee_table": None,
-        "location": "서울 마포구 홍익로 5길 20",
+        "location": {"2026-05-22": "서울 마포구 홍익로 5길 20", "2026-05-23": "서울 마포구 홍익로 5길 20", "2026-05-24": "서울 마포구 홍익로 5길 20"},
         "coupon": {"name": "2000원 할인 쿠폰", "discount_type": "AMOUNT", "discount_value": Decimal("2000.00")},
         "menus": [
             {"name": "로제파스타",  "category": "MENU",  "price": 15000, "stock": 30, "description": "로제파스타"},
@@ -79,7 +79,7 @@ BOOTH_CONFIGS = [
         "seat_type": "PT",
         "seat_fee_person": None,
         "seat_fee_table": 5000,
-        "location": "서울 송파구 올림픽로 300",
+        "location": {"2026-05-22": "서울 송파구 올림픽로 300", "2026-05-23": "서울 송파구 올림픽로 300", "2026-05-24": "서울 송파구 올림픽로 300"},
         "coupon": {"name": "5% 할인 쿠폰", "discount_type": "RATE", "discount_value": Decimal("5.00")},
         "menus": [
             {"name": "짜장면",  "category": "MENU",  "price": 7000,  "stock": 60, "description": "짜장면"},
@@ -219,7 +219,6 @@ class Command(BaseCommand):
             seat_type=cfg["seat_type"],
             seat_fee_person=cfg["seat_fee_person"],
             seat_fee_table=cfg["seat_fee_table"],
-            operate_dates=["2026-05-22", "2026-05-23", "2026-05-24"],
             host_name=f"{cfg['name']} 운영팀",
             total_revenues=0,
             location=cfg["location"],
