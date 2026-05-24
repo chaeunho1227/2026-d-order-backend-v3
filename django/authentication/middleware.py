@@ -27,6 +27,16 @@ class JWTCookieMiddleware:
         return self.get_response(request)
 
 
+# stale cookie cleanup 을 건너뛸 경로.
+# /csrf-token/ 응답에 stale delete 모르셀이 같이 실리면 단순 cookie 파서를 쓰는
+# 클라이언트 (예: Spring RestTemplate 의 DjangoApiUtil) 가 진짜 토큰 대신 empty
+# 값을 마지막에 덮어써 가져가는 회귀가 발견됨. 이 endpoint 의 응답은 깨끗하게
+# 진짜 csrftoken 1개만 가도록 유지. 다른 endpoint 들은 그대로 cleanup 부착.
+STALE_CLEANUP_SKIP_PATHS = frozenset([
+    '/api/v3/django/auth/csrf-token/',
+])
+
+
 class StaleCookiePurgeMiddleware:
     """모든 HTTP 응답에 옛 도메인 잔재 쿠키 expire를 자동 부착한다.
 
@@ -38,14 +48,18 @@ class StaleCookiePurgeMiddleware:
 
     클라이언트가 한 번 정리되면 STALE_PURGE_MARKER 쿠키가 set되고,
     이후 요청은 cleanup을 건너뛴다.
+
+    예외: STALE_CLEANUP_SKIP_PATHS 에 매칭되는 경로는 cleanup 부착 안 함
+    (Spring 등 단순 cookie 파서 호환).
     """
     def __init__(self, get_response):
         self.get_response = get_response
 
     def __call__(self, request):
         response = self.get_response(request)
-        from authentication.utils import clear_stale_domain_cookies
-        clear_stale_domain_cookies(response, request)
+        if request.path not in STALE_CLEANUP_SKIP_PATHS:
+            from authentication.utils import clear_stale_domain_cookies
+            clear_stale_domain_cookies(response, request)
         return response
 
 
