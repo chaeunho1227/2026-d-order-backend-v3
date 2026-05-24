@@ -1,6 +1,5 @@
 package com.example.spring.controller.serving;
 
-import com.example.spring.config.JwtUtil;
 import com.example.spring.domain.serving.ServingTask;
 import com.example.spring.dto.serving.response.ServingFilterOptionsData;
 import com.example.spring.dto.serving.response.ServingFilterOptionsResponse;
@@ -22,7 +21,6 @@ import java.util.Map;
 public class ServingTaskController {
 
     private final ServingTaskService servingTaskService;
-    private final JwtUtil jwtUtil;
 
     /**
      * 신규 운영자용 API
@@ -30,18 +28,21 @@ public class ServingTaskController {
      * GET /api/v3/spring/serving/servingcall
      */
     @GetMapping("/servingcall")
-    public ResponseEntity<List<ServingTaskResponse>> getMyPendingCalls(HttpServletRequest request) {
+    public ResponseEntity<?> getMyPendingCalls(HttpServletRequest request) {
         Long boothId = (Long) request.getAttribute(ServerApiJwtFilter.ATTR_BOOTH_ID);
 
         if (boothId == null) {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
         }
 
-        String currentUserIdentity = extractCurrentUserIdentity(request);
+        String serverClientId = extractServerClientId(request);
+        if (serverClientId == null) {
+            return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
+        }
 
         List<ServingTask> tasks = servingTaskService.getActiveServingCalls(boothId);
         List<ServingTaskResponse> response = tasks.stream()
-                .map(task -> ServingTaskResponse.from(task, currentUserIdentity, true))
+                .map(task -> ServingTaskResponse.from(task, serverClientId, true))
                 .toList();
 
         return ResponseEntity.ok(response);
@@ -52,7 +53,7 @@ public class ServingTaskController {
      * 필요 없으면 추후 제거 가능
      */
     @GetMapping("/servingcall/{boothId}")
-    public ResponseEntity<List<ServingTaskResponse>> getPendingCalls(
+    public ResponseEntity<?> getPendingCalls(
             @PathVariable Long boothId,
             HttpServletRequest request
     ) {
@@ -62,11 +63,14 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.FORBIDDEN).build();
         }
 
-        String currentUserIdentity = extractCurrentUserIdentity(request);
+        String serverClientId = extractServerClientId(request);
+        if (serverClientId == null) {
+            return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
+        }
 
         List<ServingTask> tasks = servingTaskService.getActiveServingCalls(boothId);
         List<ServingTaskResponse> response = tasks.stream()
-                .map(task -> ServingTaskResponse.from(task, currentUserIdentity, true))
+                .map(task -> ServingTaskResponse.from(task, serverClientId, true))
                 .toList();
 
         return ResponseEntity.ok(response);
@@ -106,8 +110,12 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
-        servingTaskService.catchCall(taskId, boothId, currentUserIdentity);
+        String serverClientId = extractServerClientId(httpRequest);
+        if (serverClientId == null) {
+            return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
+        }
+
+        servingTaskService.catchCall(taskId, boothId, serverClientId);
         return ResponseEntity.ok("서빙 요청이 수락되었습니다.");
     }
 
@@ -122,8 +130,12 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
-        servingTaskService.completeCall(taskId, boothId, currentUserIdentity);
+        String serverClientId = extractServerClientId(httpRequest);
+        if (serverClientId == null) {
+            return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
+        }
+
+        servingTaskService.completeCall(taskId, boothId, serverClientId);
         return ResponseEntity.ok("서빙이 완료되었습니다.");
     }
 
@@ -138,21 +150,20 @@ public class ServingTaskController {
             return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("인증 정보가 없습니다.");
         }
 
-        String currentUserIdentity = extractCurrentUserIdentity(httpRequest);
-        servingTaskService.cancelCall(taskId, boothId, currentUserIdentity);
+        String serverClientId = extractServerClientId(httpRequest);
+        if (serverClientId == null) {
+            return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
+        }
+
+        servingTaskService.cancelCall(taskId, boothId, serverClientId);
         return ResponseEntity.ok("서빙 수락이 취소되었습니다.");
     }
 
-    private String extractCurrentUserIdentity(HttpServletRequest request) {
-        String accessToken = (String) request.getAttribute("ACCESS_TOKEN");
-        if (accessToken == null || accessToken.isBlank()) {
-            return "unknown";
+    private String extractServerClientId(HttpServletRequest request) {
+        String serverClientId = request.getHeader("X-Server-Client-Id");
+        if (serverClientId == null || serverClientId.isBlank()) {
+            return null;
         }
-
-        String username = jwtUtil.getUsernameFromToken(accessToken);
-        if (username == null || username.isBlank()) {
-            return "unknown";
-        }
-        return username;
+        return serverClientId;
     }
 }

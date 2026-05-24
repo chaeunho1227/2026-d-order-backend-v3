@@ -194,7 +194,7 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void completeCall(Long taskId, Long boothId, String currentUserIdentity) {
+    public void completeCall(Long taskId, Long boothId, String serverClientId) {
         ServingTask task = servingTaskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 서빙 요청입니다. taskId=" + taskId));
 
@@ -206,9 +206,7 @@ public class ServingTaskService {
             throw new IllegalStateException("서빙 중인 요청만 완료할 수 있습니다.");
         }
 
-        if (currentUserIdentity != null && !currentUserIdentity.isBlank()
-                && task.getCatchedBy() != null
-                && !task.getCatchedBy().equals(currentUserIdentity)) {
+        if (!task.getCatchedBy().equals(serverClientId)) {
             throw new IllegalStateException("다른 직원이 수락한 요청은 완료할 수 없습니다.");
         }
 
@@ -219,7 +217,7 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void cancelCall(Long taskId, Long boothId, String currentUserIdentity) {
+    public void cancelCall(Long taskId, Long boothId, String serverClientId) {
         ServingTask task = servingTaskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 서빙 요청입니다. taskId=" + taskId));
 
@@ -231,9 +229,7 @@ public class ServingTaskService {
             throw new IllegalStateException("서빙 중인 요청만 취소할 수 있습니다.");
         }
 
-        if (currentUserIdentity != null && !currentUserIdentity.isBlank()
-                && task.getCatchedBy() != null
-                && !task.getCatchedBy().equals(currentUserIdentity)) {
+        if (!task.getCatchedBy().equals(serverClientId)) {
             throw new IllegalStateException("다른 직원이 수락한 요청은 취소할 수 없습니다.");
         }
 
