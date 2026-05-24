@@ -437,7 +437,7 @@ class TableService:
             TableUsage.objects.filter(table_id__in=all_table_ids, ended_at__isnull=True)
         )
         if not active_usages:
-            return
+            return None, []
 
         started_ats = [u.started_at for u in active_usages if u.started_at]
         earliest_started_at = min(started_ats) if started_ats else None
@@ -534,6 +534,8 @@ class TableService:
         rep_usage.accumulated_amount = total_accumulated
         rep_usage.save(update_fields=['started_at', 'accumulated_amount'])
 
+        return rep_usage.id, other_usage_ids
+
     @staticmethod
     @transaction.atomic
     def merge_tables(booth, table_nums):
@@ -599,7 +601,7 @@ class TableService:
 
         # 8. 활성 TableUsage 통합 (대표 테이블로 병합)
         all_table_ids = [t.id for t in all_tables]
-        TableService._merge_active_usages(all_table_ids, representative_table)
+        rep_usage_id, merged_other_usage_ids = TableService._merge_active_usages(all_table_ids, representative_table)
 
         # 8-1. 활성 세션이 있으면 모든 병합 테이블 IN_USE로 업데이트
         if TableUsage.objects.filter(table=representative_table, ended_at__isnull=True).exists():
@@ -612,6 +614,12 @@ class TableService:
         # 10. 기존 그룹 삭제
         if groups_to_merge:
             TableGroup.objects.filter(pk__in=groups_to_merge).delete()
+
+        if rep_usage_id is not None:
+            from cart.services_ws import broadcast_cart_merge_event
+            transaction.on_commit(
+                lambda: broadcast_cart_merge_event(rep_usage_id, merged_other_usage_ids)
+            )
 
         TableService._broadcast(booth.pk, {
             'type': 'merge_table',
