@@ -30,12 +30,12 @@ public class ServingTaskResponse {
         return from(task, null, false);
     }
 
-    public static ServingTaskResponse from(ServingTask task, String currentUserIdentity, boolean includePermissions) {
+    public static ServingTaskResponse from(ServingTask task, String currentServerClientId, boolean includePermissions) {
         String taskStatus = task.getStatus() != null ? task.getStatus().name() : null;
         boolean isServing = task.getStatus() == ServingStatus.SERVING;
         boolean isRequested = task.getStatus() == ServingStatus.SERVE_REQUESTED;
         Boolean mine = isServing
-                ? currentUserIdentity != null && !currentUserIdentity.isBlank() && Objects.equals(task.getCatchedBy(), currentUserIdentity)
+                ? currentServerClientId != null && !currentServerClientId.isBlank() && Objects.equals(task.getCatchedBy(), currentServerClientId)
                 : false;
 
         return ServingTaskResponse.builder()
