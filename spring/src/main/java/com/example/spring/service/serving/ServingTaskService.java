@@ -63,10 +63,10 @@ public class ServingTaskService {
     }
 
     @Transactional(readOnly = true)
-    public List<ServingTask> getPendingServingCalls(Long boothId) {
-        return servingTaskRepository.findByBoothIdAndStatusOrderByRequestedAtAsc(
+    public List<ServingTask> getActiveServingCalls(Long boothId) {
+        return servingTaskRepository.findByBoothIdAndStatusInOrderByRequestedAtAsc(
                 boothId,
-                ServingStatus.SERVE_REQUESTED
+                ACTIVE_SERVING_STATUSES
         );
     }
 
@@ -162,7 +162,7 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void catchCall(Long taskId, Long boothId) {
+    public void catchCall(Long taskId, Long boothId, String catchedBy) {
         String lockKey = "lock:serving_task:" + taskId;
         Boolean isAcquired = redisTemplate.opsForValue()
                 .setIfAbsent(lockKey, "locked", 5, TimeUnit.SECONDS);
@@ -183,7 +183,7 @@ public class ServingTaskService {
                 throw new IllegalStateException("이미 처리된 요청입니다.");
             }
 
-            task.acceptServing();
+            task.acceptServing(catchedBy);
 
             publishToDjango(boothId, "serving", task.getOrderItemId());
             webSocketHandler.broadcastEvent(boothId, "CATCH_CALL", ServingTaskResponse.from(task));
@@ -194,12 +194,22 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void completeCall(Long taskId, Long boothId) {
+    public void completeCall(Long taskId, Long boothId, String currentUserIdentity) {
         ServingTask task = servingTaskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 서빙 요청입니다. taskId=" + taskId));
 
         if (!task.getBoothId().equals(boothId)) {
             throw new IllegalStateException("해당 부스의 서빙 요청이 아닙니다.");
+        }
+
+        if (task.getStatus() != ServingStatus.SERVING) {
+            throw new IllegalStateException("서빙 중인 요청만 완료할 수 있습니다.");
+        }
+
+        if (currentUserIdentity != null && !currentUserIdentity.isBlank()
+                && task.getCatchedBy() != null
+                && !task.getCatchedBy().equals(currentUserIdentity)) {
+            throw new IllegalStateException("다른 직원이 수락한 요청은 완료할 수 없습니다.");
         }
 
         task.completeServing();
@@ -209,12 +219,22 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void cancelCall(Long taskId, Long boothId) {
+    public void cancelCall(Long taskId, Long boothId, String currentUserIdentity) {
         ServingTask task = servingTaskRepository.findById(taskId)
                 .orElseThrow(() -> new IllegalArgumentException("존재하지 않는 서빙 요청입니다. taskId=" + taskId));
 
         if (!task.getBoothId().equals(boothId)) {
             throw new IllegalStateException("해당 부스의 서빙 요청이 아닙니다.");
+        }
+
+        if (task.getStatus() != ServingStatus.SERVING) {
+            throw new IllegalStateException("서빙 중인 요청만 취소할 수 있습니다.");
+        }
+
+        if (currentUserIdentity != null && !currentUserIdentity.isBlank()
+                && task.getCatchedBy() != null
+                && !task.getCatchedBy().equals(currentUserIdentity)) {
+            throw new IllegalStateException("다른 직원이 수락한 요청은 취소할 수 없습니다.");
         }
 
         task.cancelServing();

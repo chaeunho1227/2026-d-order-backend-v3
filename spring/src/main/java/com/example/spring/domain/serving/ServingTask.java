@@ -49,6 +49,9 @@ public class ServingTask {
     @Column(name = "catched_at")
     private LocalDateTime catchedAt;
 
+    @Column(name = "catched_by")
+    private String catchedBy;
+
     @Column(name = "served_at")
     private LocalDateTime servedAt;
 
@@ -69,8 +72,9 @@ public class ServingTask {
         this.requestedAt = LocalDateTime.now();
     }
 
-    public void acceptServing() {
+    public void acceptServing(String catchedBy) {
         this.status = ServingStatus.SERVING;
+        this.catchedBy = catchedBy;
         this.catchedAt = LocalDateTime.now();
         this.updatedAt = LocalDateTime.now();
     }
@@ -83,6 +87,7 @@ public class ServingTask {
 
     public void cancelServing() {
         this.status = ServingStatus.SERVE_REQUESTED;
+        this.catchedBy = null;
         this.catchedAt = null;
         this.updatedAt = LocalDateTime.now();
     }
