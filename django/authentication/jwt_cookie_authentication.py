@@ -81,7 +81,20 @@ class JWTCookieAuthentication(JWTAuthentication):
         reason = check.process_view(request, None, (), {})
 
         if reason:
-            logger.warning("[JWTCookieAuth] CSRF check failed: %s", reason)
+            # 진단용 컨텍스트: 쿠키 길이/prefix, stale cleanup 마커, UA, path.
+            # cookie 값 전체는 토큰 자체라 보안상 prefix(8자)만 기록.
+            csrf_cookie = request.COOKIES.get('csrftoken', '')
+            stale_marker = request.COOKIES.get('_stale_purged_v2')
+            logger.warning(
+                "[JWTCookieAuth] CSRF check failed | reason=%s | path=%s | "
+                "cookie_len=%d | cookie_prefix=%s | stale_marker=%s | ua=%s",
+                reason,
+                request.path,
+                len(csrf_cookie),
+                csrf_cookie[:8] if csrf_cookie else '(empty)',
+                stale_marker,
+                request.META.get('HTTP_USER_AGENT', '')[:80],
+            )
             raise PermissionDenied(f'CSRF verification failed: {reason}')
 
         logger.debug("[JWTCookieAuth] CSRF check passed for %s %s", request.method, request.path)
