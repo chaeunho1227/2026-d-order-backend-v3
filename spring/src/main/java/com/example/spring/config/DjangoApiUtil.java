@@ -25,11 +25,19 @@ public class DjangoApiUtil {
             if (body != null && body.get("csrfToken") != null) {
                 result.put("csrfToken", body.get("csrfToken").toString());
             }
+            // Django 응답에는 진짜 csrftoken Set-Cookie 외에 StaleCookiePurgeMiddleware 가
+            // 부착하는 delete-cookie 라인 (`csrftoken=; Domain=...; expires=Thu, 01-Jan-1970...`)
+            // 도 함께 와서, 단순히 startsWith("csrftoken=") + 덮어쓰기 패턴은 마지막에
+            // 빈 값으로 덮어써질 위험이 있다. key 매칭 + value 비어있지 않음 체크 필요.
             List<String> cookies = response.getHeaders().get(HttpHeaders.SET_COOKIE);
             if (cookies != null) {
                 for (String cookie : cookies) {
-                    if (cookie.startsWith("csrftoken=")) {
-                        result.put("csrfCookie", cookie.split(";")[0]);
+                    String[] parts = cookie.split(";", 2);
+                    String[] kv = parts[0].split("=", 2);
+                    if (kv.length == 2
+                            && "csrftoken".equals(kv[0].trim())
+                            && !kv[1].isEmpty()) {
+                        result.put("csrfCookie", parts[0]);
                     }
                 }
             }
