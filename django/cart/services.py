@@ -1,7 +1,7 @@
 from datetime import timedelta
 from django.db import transaction
 from asgiref.sync import async_to_sync
-from django.db.models import F, Sum, Case, When, IntegerField, OuterRef, Subquery
+from django.db.models import F, Sum, Case, When, IntegerField, OuterRef, Subquery, Q
 from django.shortcuts import get_object_or_404
 from django.utils import timezone
 
@@ -169,21 +169,140 @@ def build_cart_item_payload(item: CartItem) -> dict:
 def _validate_menu_stock(menu: Menu, want_qty: int):
     if menu.stock < want_qty:
         raise CartError(
-            "재고가 부족합니다.",
+            f"{menu.name} 재고가 부족합니다.",
             error_code="OUT_OF_STOCK",
-            detail=f"{menu.name} 요청 수량 {want_qty}, 현재 재고 {menu.stock}",
+            detail={
+                "menu_id": menu.id,
+                "menu_name": menu.name,
+                "requested_quantity": want_qty,
+                "available_quantity": menu.stock,
+            },
             available_stock=menu.stock,
-            status_code=400,
+            status_code=409,
+        )
+        
+# [추가] PENDING 상태의 다른 장바구니가 잡고 있는 예약 수량 계산
+def _get_pending_reserved_menu_quantity_map(
+    *,
+    menu_ids: list[int],
+    exclude_cart_id: int,
+    booth_id: int,
+) -> dict[int, int]:
+    """
+    아직 주문 확정은 아니지만, 결제 요청(payment-info)을 눌러
+    PENDING 상태로 들어간 다른 장바구니의 수량을 예약 재고로 계산한다.
+
+    - 자기 cart는 제외한다.
+    - pending_expires_at이 지나지 않은 PENDING cart만 예약으로 본다.
+    - 단품 메뉴 수량 + 세트메뉴 구성품 수량을 모두 반영한다.
+    """
+    if not menu_ids:
+        return {}
+
+    now = timezone.now()
+    menu_id_set = set(menu_ids)
+    reserved_map: dict[int, int] = {}
+
+    pending_items = (
+        CartItem.objects
+        .filter(
+            cart__status=Cart.Status.PENDING,
+            cart__pending_expires_at__gt=now,
+            cart__table_usage__table__booth_id=booth_id,
+        )
+        .exclude(cart_id=exclude_cart_id)
+        .filter(
+            Q(menu_id__in=menu_ids) |
+            Q(setmenu__items__menu_id__in=menu_ids)
+        )
+        .select_related("menu", "setmenu")
+        .prefetch_related("setmenu__items__menu")
+        .distinct()
+    )
+
+    for item in pending_items:
+        # 단품 메뉴 예약 수량
+        if item.menu_id:
+            if item.menu.category != Menu.Category.FEE and item.menu_id in menu_id_set:
+                reserved_map[item.menu_id] = reserved_map.get(item.menu_id, 0) + item.quantity
+
+        # 세트메뉴 구성품 예약 수량
+        elif item.setmenu_id:
+            for comp in item.setmenu.items.all():
+                if comp.menu_id in menu_id_set:
+                    reserved_map[comp.menu_id] = (
+                        reserved_map.get(comp.menu_id, 0)
+                        + item.quantity * comp.quantity
+                    )
+
+    return reserved_map
+
+
+# 현재 cart 필요 수량 + 다른 PENDING cart 예약 수량까지 고려해서 검증
+def _validate_required_map_with_pending_reservations(cart: Cart, required_map: dict[int, int]):
+    
+    if not required_map:
+        return
+
+    booth_id = cart.table_usage.table.booth_id
+    menu_ids = list(required_map.keys())
+
+    # 동시에 payment-info가 들어오는 경우를 막기 위해 메뉴 row lock
+    locked_menus = {
+        m.id: m
+        for m in Menu.objects.select_for_update().filter(id__in=menu_ids)
+    }
+
+    reserved_map = _get_pending_reserved_menu_quantity_map(
+        menu_ids=menu_ids,
+        exclude_cart_id=cart.id,
+        booth_id=booth_id,
+    )
+
+    sold_out_items = []
+
+    for menu_id, requested_qty in required_map.items():
+        menu = locked_menus.get(menu_id)
+
+        if menu is None:
+            raise CartError(
+                "존재하지 않는 메뉴가 포함되어 있습니다.",
+                "MENU_NOT_FOUND",
+                status_code=404,
+            )
+
+        reserved_qty = reserved_map.get(menu_id, 0)
+        available_qty = menu.stock - reserved_qty
+
+        if available_qty < requested_qty:
+            sold_out_items.append(
+                {
+                    "menu_id": menu.id,
+                    "menu_name": menu.name,
+                    "requested_quantity": requested_qty,
+                    "stock": menu.stock,
+                    "reserved_quantity": reserved_qty,
+                    "available_quantity": max(available_qty, 0),
+                }
+            )
+
+    if sold_out_items:
+        first_item = sold_out_items[0]
+
+        raise CartError(
+            f"{first_item['menu_name']} 재고가 부족합니다.",
+            error_code="OUT_OF_STOCK",
+            detail={
+                "message": "일부 메뉴의 재고가 부족하여 결제 요청을 진행할 수 없습니다.",
+                "sold_out_items": sold_out_items,
+            },
+            available_stock=first_item["available_quantity"],
+            status_code=409,
         )
 
 
 def _build_required_menu_quantity_map(cart: Cart, *, override_item=None, override_quantity=None):
-    """
-    장바구니 전체 기준으로 각 단일 메뉴가 총 몇 개 필요한지 계산
-    - 단품 메뉴 직접 담긴 수량
-    - 세트메뉴 구성품 수량
-    둘 다 합산
-    """
+
     required = {}
 
     items = list(
@@ -578,6 +697,9 @@ def enter_payment_info(*, table_usage_id: int):
         )
 
     _validate_required_fee_for_first_round(cart)
+    
+    required_map = _build_required_menu_quantity_map(cart)
+    _validate_required_map_with_pending_reservations(cart, required_map)
 
     subtotal = recalc_cart_price(cart)
     discount_total = 0
@@ -611,7 +733,7 @@ def enter_payment_info(*, table_usage_id: int):
     total = subtotal - discount_total
 
     cart.status = Cart.Status.PENDING
-    cart.pending_expires_at = None
+    cart.pending_expires_at = timezone.now() + timedelta(minutes=3)
     cart.save(update_fields=["status", "pending_expires_at"])
 
     logger.info(
