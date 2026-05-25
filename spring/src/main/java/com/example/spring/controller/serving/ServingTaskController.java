@@ -115,7 +115,9 @@ public class ServingTaskController {
             return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
         }
 
-        servingTaskService.catchCall(taskId, boothId, serverClientId);
+        String sessionId = (String) httpRequest.getAttribute(ServerApiJwtFilter.ATTR_SESSION_ID);
+
+        servingTaskService.catchCall(taskId, boothId, serverClientId, sessionId);
         return ResponseEntity.ok("서빙 요청이 수락되었습니다.");
     }
 

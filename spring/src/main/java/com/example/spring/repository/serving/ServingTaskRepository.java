@@ -22,4 +22,7 @@ public interface ServingTaskRepository extends JpaRepository<ServingTask, Long> 
     long deleteByBoothIdAndOrderItemIdAndStatusIn(Long boothId, Long orderItemId, List<ServingStatus> statuses);
 
     long deleteByBoothIdAndTableNumberAndStatusIn(Long boothId, Integer tableNumber, List<ServingStatus> statuses);
+
+    /** WS 세션 단절 시 해당 세션이 잡고 있던 SERVING task 조회 (자동 해제용) */
+    List<ServingTask> findByLockedBySessionIdAndStatus(String lockedBySessionId, ServingStatus status);
 }

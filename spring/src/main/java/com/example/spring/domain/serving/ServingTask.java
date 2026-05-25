@@ -58,6 +58,9 @@ public class ServingTask {
     @Column(name = "key", nullable = false, length = 255)
     private String key;
 
+    @Column(name = "locked_by_session_id", length = 36)
+    private String lockedBySessionId;
+
     @Builder
     public ServingTask(Long boothId, Long orderItemId, Integer tableNumber, Long menuId, String menuName, Integer quantity, String key) {
         this.boothId = boothId;
@@ -72,10 +75,11 @@ public class ServingTask {
         this.requestedAt = LocalDateTime.now();
     }
 
-    public void acceptServing(String catchedBy) {
+    public void acceptServing(String catchedBy, String sessionId) {
         this.status = ServingStatus.SERVING;
         this.catchedBy = catchedBy;
         this.catchedAt = LocalDateTime.now();
+        this.lockedBySessionId = sessionId;
         this.updatedAt = LocalDateTime.now();
     }
 
@@ -89,6 +93,7 @@ public class ServingTask {
         this.status = ServingStatus.SERVE_REQUESTED;
         this.catchedBy = null;
         this.catchedAt = null;
+        this.lockedBySessionId = null;
         this.updatedAt = LocalDateTime.now();
     }
 }
