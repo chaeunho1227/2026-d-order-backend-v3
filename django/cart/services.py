@@ -204,20 +204,23 @@ def _get_pending_reserved_menu_quantity_map(
     reserved_map: dict[int, int] = {}
 
     pending_items = (
-        CartItem.objects
-        .filter(
-            cart__status=Cart.Status.PENDING,
-            cart__pending_expires_at__gt=now,
-            cart__table_usage__table__booth_id=booth_id,
-        )
-        .exclude(cart_id=exclude_cart_id)
-        .filter(
-            Q(menu_id__in=menu_ids) |
-            Q(setmenu__items__menu_id__in=menu_ids)
-        )
-        .select_related("menu", "setmenu")
-        .prefetch_related("setmenu__items__menu")
-        .distinct()
+    CartItem.objects
+    .filter(
+        cart__status=Cart.Status.PENDING,
+        cart__table_usage__table__booth_id=booth_id,
+    )
+    .filter(
+        Q(cart__pending_expires_at__gt=now) |
+        Q(cart__pending_expires_at__isnull=True)
+    )
+    .exclude(cart_id=exclude_cart_id)
+    .filter(
+        Q(menu_id__in=menu_ids) |
+        Q(setmenu__items__menu_id__in=menu_ids)
+    )
+    .select_related("menu", "setmenu")
+    .prefetch_related("setmenu__items__menu")
+    .distinct()
     )
 
     for item in pending_items:
@@ -257,6 +260,15 @@ def _validate_required_map_with_pending_reservations(cart: Cart, required_map: d
         menu_ids=menu_ids,
         exclude_cart_id=cart.id,
         booth_id=booth_id,
+    )
+    
+    logger.warning(
+    "[Cart][ReservationCheck] cart_id=%s table_usage_id=%s booth_id=%s required_map=%s reserved_map=%s",
+    cart.id,
+    cart.table_usage_id,
+    booth_id,
+    required_map,
+    reserved_map,
     )
 
     sold_out_items = []
@@ -735,6 +747,8 @@ def enter_payment_info(*, table_usage_id: int):
     cart.status = Cart.Status.PENDING
     cart.pending_expires_at = timezone.now() + timedelta(minutes=3)
     cart.save(update_fields=["status", "pending_expires_at"])
+    
+    cart.refresh_from_db(fields=["status", "pending_expires_at"])
 
     logger.info(
         f"[Cart] SET_PENDING "
@@ -749,6 +763,9 @@ def enter_payment_info(*, table_usage_id: int):
         "bank_name": booth.bank,
         "account": booth.account,
         "amount": total,
+        
+        "debug_marker": "enter_payment_info_v2",
+        "debug_pending_expires_at": cart.pending_expires_at,
     }
 
     return cart, payment
