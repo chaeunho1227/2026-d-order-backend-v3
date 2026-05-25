@@ -162,7 +162,7 @@ public class ServingTaskService {
     }
 
     @Transactional
-    public void catchCall(Long taskId, Long boothId, String catchedBy) {
+    public void catchCall(Long taskId, Long boothId, String catchedBy, String sessionId) {
         String lockKey = "lock:serving_task:" + taskId;
         Boolean isAcquired = redisTemplate.opsForValue()
                 .setIfAbsent(lockKey, "locked", 5, TimeUnit.SECONDS);
@@ -183,13 +183,34 @@ public class ServingTaskService {
                 throw new IllegalStateException("이미 처리된 요청입니다.");
             }
 
-            task.acceptServing(catchedBy);
+            task.acceptServing(catchedBy, sessionId);
 
             publishToDjango(boothId, "serving", task.getOrderItemId());
             webSocketHandler.broadcastEvent(boothId, "CATCH_CALL", ServingTaskResponse.from(task));
 
         } finally {
             redisTemplate.delete(lockKey);
+        }
+    }
+
+    /**
+     * WS 세션 단절 시 해당 세션이 잡고 있던 SERVING task를 자동으로 SERVE_REQUESTED로 복구.
+     * ServingWebSocketHandler.afterConnectionClosed 에서 호출.
+     */
+    @Transactional
+    public void releaseBySessionId(String sessionId) {
+        List<ServingTask> locked = servingTaskRepository
+                .findByLockedBySessionIdAndStatus(sessionId, ServingStatus.SERVING);
+
+        for (ServingTask task : locked) {
+            log.warn("[서빙 세션 해제] taskId={}, boothId={}, sessionId={}", task.getId(), task.getBoothId(), sessionId);
+            task.cancelServing();
+            publishToDjango(task.getBoothId(), "cooked", task.getOrderItemId());
+            webSocketHandler.broadcastEvent(task.getBoothId(), "CANCEL_CALL", ServingTaskResponse.from(task));
+        }
+
+        if (!locked.isEmpty()) {
+            log.info("[서빙 세션 해제 완료] sessionId={}, 총 {}건 복구", sessionId, locked.size());
         }
     }
 
@@ -323,6 +344,7 @@ public class ServingTaskService {
         }
         return payload;
     }
+
 
     private void publishToDjango(Long boothId, String status, Long orderItemId) {
         try {

@@ -1,9 +1,12 @@
 package com.example.spring.websocket;
 
+import com.example.spring.service.serving.ServingTaskService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.CloseStatus;
@@ -19,6 +22,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import static com.example.spring.config.StaffCallHandshakeInterceptor.ATTR_BOOTH_ID;
+import static com.example.spring.config.StaffCallHandshakeInterceptor.ATTR_SESSION_ID;
 
 @Slf4j
 @Component
@@ -27,6 +31,10 @@ public class ServingWebSocketHandler extends TextWebSocketHandler {
 
     private final Map<Long, Set<WebSocketSession>> boothSessions = new ConcurrentHashMap<>();
     private final ObjectMapper objectMapper;
+
+    @Lazy
+    @Autowired
+    private ServingTaskService servingTaskService;
 
     @Override
     public void afterConnectionEstablished(WebSocketSession session) {
@@ -48,6 +56,8 @@ public class ServingWebSocketHandler extends TextWebSocketHandler {
     @Override
     public void afterConnectionClosed(WebSocketSession session, CloseStatus status) {
         Object boothAttr = session.getAttributes().get(ATTR_BOOTH_ID);
+        String sessionId = (String) session.getAttributes().get(ATTR_SESSION_ID);
+
         if (boothAttr instanceof Long boothId) {
             Set<WebSocketSession> sessions = boothSessions.get(boothId);
             if (sessions != null) {
@@ -59,6 +69,14 @@ public class ServingWebSocketHandler extends TextWebSocketHandler {
             log.info("[serving ws] 연결 해제 boothId={}, session={}, status={}", boothId, session.getId(), status);
         } else {
             log.info("[serving ws] 연결 해제(boothId 없음) session={}, status={}", session.getId(), status);
+        }
+
+        if (sessionId != null) {
+            try {
+                servingTaskService.releaseBySessionId(sessionId);
+            } catch (Exception e) {
+                log.error("[serving ws] disconnect 자동 해제 실패 sessionId={}", sessionId, e);
+            }
         }
     }
 
