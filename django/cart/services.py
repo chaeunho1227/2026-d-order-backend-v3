@@ -86,13 +86,21 @@ def _ensure_table_usage_alive(table_usage: TableUsage):
 
 
 def _restore_if_pending_expired(cart: Cart) -> bool:
-    if not cart.is_pending_expired():
+    """
+    PENDING 상태인데 결제 대기 시간이 만료되었거나,
+    예전 코드로 인해 pending_expires_at이 null로 남은 경우 ACTIVE로 복구한다.
+    """
+    if cart.status != Cart.Status.PENDING:
+        return False
+
+    if cart.pending_expires_at is not None and cart.pending_expires_at > timezone.now():
         return False
 
     logger.info(
         f"[Cart] PENDING_RESTORED table_usage_id={cart.table_usage_id} "
         f"expired_at={cart.pending_expires_at}"
     )
+
     cart.status = Cart.Status.ACTIVE
     cart.pending_expires_at = None
     cart.save(update_fields=["status", "pending_expires_at"])
@@ -181,7 +189,6 @@ def _validate_menu_stock(menu: Menu, want_qty: int):
             status_code=409,
         )
         
-# [추가] PENDING 상태의 다른 장바구니가 잡고 있는 예약 수량 계산
 def _get_pending_reserved_menu_quantity_map(
     *,
     menu_ids: list[int],
@@ -189,47 +196,45 @@ def _get_pending_reserved_menu_quantity_map(
     booth_id: int,
 ) -> dict[int, int]:
     """
-    아직 주문 확정은 아니지만, 결제 요청(payment-info)을 눌러
-    PENDING 상태로 들어간 다른 장바구니의 수량을 예약 재고로 계산한다.
+    결제 요청(payment-info)을 눌러 PENDING 상태가 된 다른 장바구니의 수량을
+    예약 재고로 계산한다.
 
-    - 자기 cart는 제외한다.
-    - pending_expires_at이 지나지 않은 PENDING cart만 예약으로 본다.
-    - 단품 메뉴 수량 + 세트메뉴 구성품 수량을 모두 반영한다.
+    단, pending_expires_at이 현재 시간보다 미래인 PENDING cart만 예약으로 본다.
+    pending_expires_at이 null이거나 만료된 cart는 먼저 ACTIVE로 복구한다.
     """
     if not menu_ids:
         return {}
+
+    _cleanup_invalid_pending_carts(booth_id=booth_id)
 
     now = timezone.now()
     menu_id_set = set(menu_ids)
     reserved_map: dict[int, int] = {}
 
     pending_items = (
-    CartItem.objects
-    .filter(
-        cart__status=Cart.Status.PENDING,
-        cart__table_usage__table__booth_id=booth_id,
-    )
-    .filter(
-        Q(cart__pending_expires_at__gt=now) |
-        Q(cart__pending_expires_at__isnull=True)
-    )
-    .exclude(cart_id=exclude_cart_id)
-    .filter(
-        Q(menu_id__in=menu_ids) |
-        Q(setmenu__items__menu_id__in=menu_ids)
-    )
-    .select_related("menu", "setmenu")
-    .prefetch_related("setmenu__items__menu")
-    .distinct()
+        CartItem.objects
+        .filter(
+            cart__status=Cart.Status.PENDING,
+            cart__pending_expires_at__gt=now,
+            cart__table_usage__table__booth_id=booth_id,
+        )
+        .exclude(cart_id=exclude_cart_id)
+        .filter(
+            Q(menu_id__in=menu_ids) |
+            Q(setmenu__items__menu_id__in=menu_ids)
+        )
+        .select_related("menu", "setmenu")
+        .prefetch_related("setmenu__items__menu")
+        .distinct()
     )
 
     for item in pending_items:
-        # 단품 메뉴 예약 수량
         if item.menu_id:
             if item.menu.category != Menu.Category.FEE and item.menu_id in menu_id_set:
-                reserved_map[item.menu_id] = reserved_map.get(item.menu_id, 0) + item.quantity
+                reserved_map[item.menu_id] = (
+                    reserved_map.get(item.menu_id, 0) + item.quantity
+                )
 
-        # 세트메뉴 구성품 예약 수량
         elif item.setmenu_id:
             for comp in item.setmenu.items.all():
                 if comp.menu_id in menu_id_set:
@@ -240,17 +245,46 @@ def _get_pending_reserved_menu_quantity_map(
 
     return reserved_map
 
+def _cleanup_invalid_pending_carts(*, booth_id: int | None = None):
+
+    now = timezone.now()
+
+    qs = Cart.objects.filter(status=Cart.Status.PENDING)
+
+    if booth_id is not None:
+        qs = qs.filter(table_usage__table__booth_id=booth_id)
+
+    updated_count = (
+        qs.filter(
+            Q(pending_expires_at__isnull=True) |
+            Q(pending_expires_at__lte=now)
+        )
+        .update(
+            status=Cart.Status.ACTIVE,
+            pending_expires_at=None,
+        )
+    )
+
+    if updated_count:
+        logger.info(
+            "[Cart] INVALID_PENDING_CLEANED booth_id=%s count=%s",
+            booth_id,
+            updated_count,
+        )
+
 
 # 현재 cart 필요 수량 + 다른 PENDING cart 예약 수량까지 고려해서 검증
 def _validate_required_map_with_pending_reservations(cart: Cart, required_map: dict[int, int]):
-    
+    """
+    현재 cart가 필요로 하는 수량과,
+    다른 PENDING cart가 예약 중인 수량을 함께 고려하여 재고를 검증한다.
+    """
     if not required_map:
         return
 
     booth_id = cart.table_usage.table.booth_id
     menu_ids = list(required_map.keys())
 
-    # 동시에 payment-info가 들어오는 경우를 막기 위해 메뉴 row lock
     locked_menus = {
         m.id: m
         for m in Menu.objects.select_for_update().filter(id__in=menu_ids)
@@ -261,14 +295,14 @@ def _validate_required_map_with_pending_reservations(cart: Cart, required_map: d
         exclude_cart_id=cart.id,
         booth_id=booth_id,
     )
-    
-    logger.warning(
-    "[Cart][ReservationCheck] cart_id=%s table_usage_id=%s booth_id=%s required_map=%s reserved_map=%s",
-    cart.id,
-    cart.table_usage_id,
-    booth_id,
-    required_map,
-    reserved_map,
+
+    logger.info(
+        "[Cart][ReservationCheck] cart_id=%s table_usage_id=%s booth_id=%s required_map=%s reserved_map=%s",
+        cart.id,
+        cart.table_usage_id,
+        booth_id,
+        required_map,
+        reserved_map,
     )
 
     sold_out_items = []
@@ -681,6 +715,9 @@ def delete_item(*, table_usage_id: int, cart_item_id: int):
 
 @transaction.atomic
 def enter_payment_info(*, table_usage_id: int):
+    # 예전 코드로 인해 남아있는 비정상 PENDING cart를 먼저 정리
+    _cleanup_invalid_pending_carts()
+
     cart = get_or_create_cart_by_table_usage(table_usage_id)
 
     logger.info(
@@ -688,7 +725,7 @@ def enter_payment_info(*, table_usage_id: int):
         f"table_usage_id={table_usage_id} status={cart.status} "
         f"pending_expires_at={cart.pending_expires_at}"
     )
-    
+
     if not cart.items.exists():
         raise CartError(
             "장바구니가 비어 있습니다.",
@@ -709,7 +746,7 @@ def enter_payment_info(*, table_usage_id: int):
         )
 
     _validate_required_fee_for_first_round(cart)
-    
+
     required_map = _build_required_menu_quantity_map(cart)
     _validate_required_map_with_pending_reservations(cart, required_map)
 
@@ -747,7 +784,6 @@ def enter_payment_info(*, table_usage_id: int):
     cart.status = Cart.Status.PENDING
     cart.pending_expires_at = timezone.now() + timedelta(minutes=3)
     cart.save(update_fields=["status", "pending_expires_at"])
-    
     cart.refresh_from_db(fields=["status", "pending_expires_at"])
 
     logger.info(
@@ -755,7 +791,7 @@ def enter_payment_info(*, table_usage_id: int):
         f"table_usage_id={table_usage_id} "
         f"expires_at={cart.pending_expires_at}"
     )
-    
+
     booth = cart.table_usage.table.booth
 
     payment = {
@@ -763,9 +799,6 @@ def enter_payment_info(*, table_usage_id: int):
         "bank_name": booth.bank,
         "account": booth.account,
         "amount": total,
-        
-        "debug_marker": "enter_payment_info_v2",
-        "debug_pending_expires_at": cart.pending_expires_at,
     }
 
     return cart, payment
