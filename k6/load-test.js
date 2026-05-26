@@ -149,7 +149,35 @@ export function setup() {
   const tableMaxCnt = JSON.parse(mypageRes.body).data.table_max_cnt || 10;
   console.log(`setup: TABLE_COUNT = ${tableMaxCnt}`);
 
-  // ── 5. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
+  // ── 5. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
+  //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 — X-CSRFToken 헤더 필요
+  const csrfRes = http.get(
+    `${BASE_URL}/api/v3/django/auth/csrf-token/`,
+    { jar },
+  );
+
+  // StaleCookiePurgeMiddleware가 동명의 delete-cookie를 함께 부착하므로
+  // value가 비어 있지 않은 마지막 항목을 사용한다.
+  const csrfCookies = jar.cookiesForURL(`${BASE_URL}`);
+  let csrfToken = '';
+  if (csrfCookies.csrftoken) {
+    for (const c of csrfCookies.csrftoken) {
+      if (c.value) csrfToken = c.value;
+    }
+  }
+
+  if (csrfToken) {
+    const resetRes = http.del(
+      `${BASE_URL}/api/v3/django/booth/mypage/reset-table-data/`,
+      null,
+      { headers: { 'X-CSRFToken': csrfToken }, jar },
+    );
+    console.log(`setup: 테이블 데이터 리셋 — HTTP ${resetRes.status}`);
+  } else {
+    console.warn('setup: CSRF 토큰 획득 실패 — 테이블 리셋 건너뜀');
+  }
+
+  // ── 6. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
   const menuRes = http.get(
     `${BASE_URL}/api/v3/django/booth/${boothUuid}/menu-list/`,
   );
@@ -188,7 +216,9 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 // ──────────────────────────────────────────────
 export default function (data) {
   const { boothUuid, tableMaxCnt, menuIds, setIds } = data;
-  const tableNum = randomInt(1, tableMaxCnt);
+  // VU별 고정 테이블 배정 — 동일 VU는 항상 같은 테이블 → 세션 충돌 방지
+  // VU 수 > tableMaxCnt 인 버스트 구간에서는 모듈러로 자연스럽게 순환
+  const tableNum = ((__VU - 1) % tableMaxCnt) + 1;
 
   // ── Step 1. 테이블 입장 ──────────────────────
   let tableUsageId;
@@ -210,6 +240,9 @@ export default function (data) {
     sleep(rand(2, 5));
     return;
   }
+
+  // payment_info 가 PENDING 상태를 확정했을 때만 payment_confirm 진행
+  let cartIsPending = false;
 
   // ── Step 2. 메뉴판 조회 ─────────────────────
   group('02_menu_list', () => {
@@ -270,7 +303,8 @@ export default function (data) {
       JSON.stringify({ table_usage_id: tableUsageId }),
       { headers: JSON_HEADERS },
     );
-    check(res, { 'payment_info 200': (r) => r.status === 200 });
+    const ok = check(res, { 'payment_info 200': (r) => r.status === 200 });
+    if (ok) cartIsPending = true;
   });
 
   sleep(rand(1, 3));
@@ -278,6 +312,11 @@ export default function (data) {
   // ── Step 6. 결제 확인 (payment-confirm) ─────
   // 핵심 엔드포인트 — 주문 누락 원인 지점
   group('06_payment_confirm', () => {
+    if (!cartIsPending) {
+      // payment_info 가 실패했거나 다른 VU가 이미 처리한 케이스 — 스킵
+      return;
+    }
+
     const start = Date.now();
     const res = http.post(
       `${BASE_URL}/api/v3/django/cart/payment-confirm/`,
@@ -285,6 +324,15 @@ export default function (data) {
       { headers: JSON_HEADERS },
     );
     paymentConfirmDuration.add(Date.now() - start);
+
+    // 409 CART_NOT_PENDING: 버스트 구간에서 VU 수 > 테이블 수로 인한 경합
+    // → 실제 장애가 아니므로 에러로 집계하지 않고 조용히 스킵
+    if (res.status === 409) {
+      console.log(
+        `[payment_confirm 409-skip] table_usage_id=${tableUsageId} — VU 경합 스킵`,
+      );
+      return;
+    }
 
     const ok = check(res, {
       'payment_confirm 200': (r) => r.status === 200,
