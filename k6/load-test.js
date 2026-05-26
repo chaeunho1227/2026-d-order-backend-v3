@@ -51,6 +51,9 @@ const tableEnterErrors       = new Counter('table_enter_errors');
 // 시나리오 & 임계값
 // ──────────────────────────────────────────────
 export const options = {
+  // localhost 실행 시 HTTP→HTTPS 리다이렉트에서 인증서 호스트명 불일치 우회
+  insecureSkipTLSVerify: true,
+
   scenarios: {
     /**
      * 엄격 피크 시나리오 (GA 실측 ×2)
