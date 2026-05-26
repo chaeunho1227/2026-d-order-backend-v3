@@ -11,13 +11,19 @@
  *   스트레스: 55 VU (×3배, 장애 임계점 탐색)
  *
  * 시나리오 구성:
- *   A. peak_load        — 손님 HTTP 주문 플로우 (35→55 VU)
- *   B. admin_ws_listener — 부스 어드민 10명 WS 동시 연결 유지 + 수신 이벤트 계수
- *      누락 건수 = orders_created − (orders_received ÷ 10)
+ *   A. peak_load        — 손님 HTTP 주문 플로우 (35→55 VU, 부스 분산)
+ *   B. admin_ws_listener — 어드민 N명이 각자 자기 부스 WS 연결 유지
+ *      어드민마다 다른 부스를 감시하므로 orders_received ≈ orders_created
+ *      (누락 건수 = orders_created − orders_received)
  *
  * 실행 방법 (EC2 서버 위에서 실행):
- *   # nginx 로컬 직접 호출 (보안그룹 우회, Cloudflare 불필요)
+ *   # 단일 부스 (기본)
  *   k6 run -e BASE_URL=https://localhost ~/load-test.js
+ *
+ *   # 다중 부스 (어드민 계정 목록을 콤마로 구분, user:pass 형식)
+ *   k6 run -e BASE_URL=https://localhost \
+ *           -e ADMIN_CREDS='test77:test,test78:test,test79:test,...' \
+ *           ~/load-test.js
  */
 
 import http from 'k6/http';
@@ -32,9 +38,16 @@ const BASE_URL = __ENV.BASE_URL || 'https://dorder-api.shop';
 // https → wss, http → ws  (WebSocket URL 자동 변환)
 const WS_BASE  = BASE_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
-// 부스 어드민 계정 (setup에서 BOOTH_UUID + TABLE_COUNT 자동 조회용)
-const ADMIN_USERNAME = 'test77';
-const ADMIN_PASSWORD = 'test';
+// 어드민 계정 목록 — 환경변수 ADMIN_CREDS로 주입, 기본값 test77:test
+// 형식: 'user1:pass1,user2:pass2,...'
+const ADMIN_CREDS = (__ENV.ADMIN_CREDS || 'test77:test')
+  .split(',')
+  .map(s => {
+    const sep = s.indexOf(':');
+    return { username: s.slice(0, sep), password: s.slice(sep + 1) };
+  });
+
+const ADMIN_COUNT = ADMIN_CREDS.length;
 
 // ──────────────────────────────────────────────
 // 커스텀 메트릭
@@ -55,8 +68,9 @@ export const options = {
 
   scenarios: {
     /**
-     * A. 고객 주문 플로우
-     * ramp-up 2m → 피크 10m → 버스트 3m → ramp-down 1m (총 16m)
+     * A. 손님 주문 플로우
+     * ramp-up 2m → 피크 10m → 버스트 3m → ramp-down 1m (총 18m)
+     * VU는 __VU % ADMIN_COUNT 로 부스를 분산 배정
      */
     peak_load: {
       executor:         'ramping-vus',
@@ -73,19 +87,14 @@ export const options = {
     },
 
     /**
-     * B. 부스 어드민 WebSocket 감시
-     * 10 VU가 테스트 전 구간 각자 연결 유지 → ADMIN_NEW_ORDER 이벤트 계수
-     *
-     * ⚠ orders_received 해석:
-     *   10명의 어드민이 각각 동일한 ADMIN_NEW_ORDER 이벤트를 수신·집계하므로
-     *   orders_received ≒ orders_created × 10  (완전 전달 시)
-     *   실제 어드민 1인당 수신율 = orders_received ÷ 10
-     *   누락 건수 = orders_created − (orders_received ÷ 10)
+     * B. 어드민 WebSocket 감시
+     * ADMIN_COUNT VU 각자 자기 부스 WS 연결 유지 → ADMIN_NEW_ORDER 이벤트 계수
+     * 부스가 다르므로 이벤트 중복 없음 → orders_received ≈ orders_created
      */
     admin_ws_listener: {
       executor:     'constant-vus',
       exec:         'adminWsListener',
-      vus:          10,
+      vus:          ADMIN_COUNT,
       duration:     '18m30s',  // peak_load 전 구간 커버 (+30s 여유)
       gracefulStop: '10s',
     },
@@ -100,37 +109,36 @@ export const options = {
     payment_confirm_ms:     ['p(95)<3000', 'p(99)<8000'],
     payment_confirm_errors: ['count<5'],
 
-    // 주문 생성 최소 건수 확인
+    // 주문 생성 최소 건수
     orders_created:         ['count>100'],
 
-    // WS 비정상 종료 허용 한도 (10명 기준, 워커 재시작 등 의도된 재연결 제외)
-    ws_disconnects:         ['count<10'],
+    // WS 비정상 종료 허용 한도 (어드민 수 × 1회 재시작 여유)
+    ws_disconnects:         [`count<${ADMIN_COUNT}`],
   },
 };
 
 // ──────────────────────────────────────────────
-// setup: 어드민 로그인 → BOOTH_UUID·TABLE_COUNT·accessToken 자동 조회
+// 부스 1개 setup 헬퍼
 // ──────────────────────────────────────────────
-export function setup() {
+function setupBooth(cred) {
   const jar = http.cookieJar();
+  const { username, password } = cred;
 
   // ── 1. 로그인 (CSRF 불필요 — JWT 없는 익명 POST는 CSRF 체크 skip)
   const loginRes = http.post(
     `${BASE_URL}/api/v3/django/auth/`,
-    JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
+    JSON.stringify({ username, password }),
     { headers: { 'Content-Type': 'application/json' }, jar },
   );
   if (loginRes.status !== 200) {
-    throw new Error(`setup: 로그인 실패 (HTTP ${loginRes.status})\n${loginRes.body}`);
+    throw new Error(`setup [${username}]: 로그인 실패 (HTTP ${loginRes.status})\n${loginRes.body}`);
   }
   const loginData = JSON.parse(loginRes.body).data;
-  console.log(`setup: 로그인 성공 — booth_name="${loginData.booth_name}"`);
+  console.log(`setup [${username}]: 로그인 성공 — booth_name="${loginData.booth_name}"`);
 
   // JWT access_token 추출 (WS 핸드셰이크 Cookie 헤더에 사용)
-  // access_token은 HttpOnly 쿠키 → jar.cookiesForURL()로는 읽히지 않음.
-  // response.cookies는 k6 클라이언트 수준에서 모든 쿠키(HttpOnly 포함)를 반환한다.
-  // StaleCookiePurgeMiddleware가 delete-cookie를 함께 부착하므로
-  // value가 비어 있지 않은 마지막 항목을 선택한다.
+  // access_token은 HttpOnly → jar.cookiesForURL()로는 읽히지 않으므로
+  // response.cookies에서 직접 추출한다.
   let accessToken = '';
   if (loginRes.cookies && loginRes.cookies.access_token) {
     for (const c of loginRes.cookies.access_token) {
@@ -138,39 +146,35 @@ export function setup() {
     }
   }
   if (!accessToken) {
-    throw new Error('setup: access_token 쿠키를 찾을 수 없습니다.');
+    throw new Error(`setup [${username}]: access_token 쿠키를 찾을 수 없습니다.`);
   }
-  console.log('setup: access_token 획득 완료');
 
-  // ── 2. QR URL 조회
+  // ── 2. QR URL 조회 → booth UUID 추출
   const qrRes = http.get(`${BASE_URL}/api/v3/django/booth/mypage/qr-download/`, { jar });
   if (qrRes.status !== 200) {
-    throw new Error(`setup: QR URL 조회 실패 (HTTP ${qrRes.status})\n${qrRes.body}`);
+    throw new Error(`setup [${username}]: QR URL 조회 실패 (HTTP ${qrRes.status})`);
   }
   const qrImageUrl = JSON.parse(qrRes.body).data.qr_image_url;
-
-  // ── 3. QR URL에서 booth UUID 추출
-  const uuidMatch = qrImageUrl.match(
+  const uuidMatch  = qrImageUrl.match(
     /booth_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_qr/i,
   );
   if (!uuidMatch) {
-    throw new Error(`setup: QR URL에서 UUID를 찾을 수 없습니다. URL: ${qrImageUrl}`);
+    throw new Error(`setup [${username}]: QR URL에서 UUID를 찾을 수 없습니다. URL: ${qrImageUrl}`);
   }
   const boothUuid = uuidMatch[1];
-  console.log(`setup: BOOTH_UUID = ${boothUuid}`);
+  console.log(`setup [${username}]: BOOTH_UUID = ${boothUuid}`);
 
-  // ── 4. mypage에서 table_max_cnt 조회
+  // ── 3. mypage → table_max_cnt
   const mypageRes = http.get(`${BASE_URL}/api/v3/django/booth/mypage/`, { jar });
   if (mypageRes.status !== 200) {
-    throw new Error(`setup: mypage 조회 실패 (HTTP ${mypageRes.status})\n${mypageRes.body}`);
+    throw new Error(`setup [${username}]: mypage 조회 실패 (HTTP ${mypageRes.status})`);
   }
   const tableMaxCnt = JSON.parse(mypageRes.body).data.table_max_cnt || 10;
-  console.log(`setup: TABLE_COUNT = ${tableMaxCnt}`);
+  console.log(`setup [${username}]: TABLE_COUNT = ${tableMaxCnt}`);
 
-  // ── 5. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
-  //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 — X-CSRFToken 헤더 필요
+  // ── 4. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
+  //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 → X-CSRFToken 헤더 필요
   const csrfRes = http.get(`${BASE_URL}/api/v3/django/auth/csrf-token/`, { jar });
-  // csrftoken은 HttpOnly가 아니지만 response.cookies로 일관성 있게 읽는다.
   let csrfToken = '';
   if (csrfRes.cookies && csrfRes.cookies.csrftoken) {
     for (const c of csrfRes.cookies.csrftoken) {
@@ -183,15 +187,15 @@ export function setup() {
       null,
       { headers: { 'X-CSRFToken': csrfToken }, jar },
     );
-    console.log(`setup: 테이블 데이터 리셋 — HTTP ${resetRes.status}`);
+    console.log(`setup [${username}]: 테이블 리셋 — HTTP ${resetRes.status}`);
   } else {
-    console.warn('setup: CSRF 토큰 획득 실패 — 테이블 리셋 건너뜀');
+    console.warn(`setup [${username}]: CSRF 토큰 획득 실패 — 테이블 리셋 건너뜀`);
   }
 
-  // ── 6. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
+  // ── 5. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
   const menuRes = http.get(`${BASE_URL}/api/v3/django/booth/${boothUuid}/menu-list/`);
   if (menuRes.status !== 200) {
-    throw new Error(`setup: menu-list 조회 실패 (HTTP ${menuRes.status})\n${menuRes.body}`);
+    throw new Error(`setup [${username}]: menu-list 조회 실패 (HTTP ${menuRes.status})`);
   }
   const d = JSON.parse(menuRes.body).data;
   const menuIds = [
@@ -201,11 +205,20 @@ export function setup() {
   const setIds = (d.SET || []).filter(s => !s.is_soldout && s.stock > 0).map(s => s.id);
 
   if (menuIds.length === 0) {
-    throw new Error('setup: 주문 가능한 메뉴가 없습니다. 재고를 확인하세요.');
+    throw new Error(`setup [${username}]: 주문 가능한 메뉴가 없습니다. 재고를 확인하세요.`);
   }
-  console.log(`setup 완료 — 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
+  console.log(`setup [${username}]: 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
 
   return { boothUuid, tableMaxCnt, menuIds, setIds, accessToken };
+}
+
+// ──────────────────────────────────────────────
+// setup: 전체 어드민 계정으로 부스 데이터 수집
+// ──────────────────────────────────────────────
+export function setup() {
+  const booths = ADMIN_CREDS.map(cred => setupBooth(cred));
+  console.log(`setup 완료 — 총 ${booths.length}개 부스`);
+  return { booths };
 }
 
 // ──────────────────────────────────────────────
@@ -214,14 +227,16 @@ export function setup() {
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 // ──────────────────────────────────────────────
-// 시나리오 A: 고객 전체 주문 플로우
+// 시나리오 A: 손님 전체 주문 플로우
 // (고객 엔드포인트는 모두 authentication_classes=[] — 인증 불필요)
 // ──────────────────────────────────────────────
 export function customerFlow(data) {
-  const { boothUuid, tableMaxCnt, menuIds, setIds } = data;
-  // VU별 고정 테이블 배정 — 동일 VU는 항상 같은 테이블 → 세션 충돌 방지
-  // VU 수 > tableMaxCnt 인 버스트 구간에서는 모듈러로 자연스럽게 순환
-  const tableNum = ((__VU - 1) % tableMaxCnt) + 1;
+  // VU → 부스 분산: 모든 부스에 손님이 고르게 들어가도록 모듈러 배정
+  const booth      = data.booths[(__VU - 1) % data.booths.length];
+  const { boothUuid, tableMaxCnt, menuIds, setIds } = booth;
+
+  // 부스 내 테이블 고정 배정 — 동일 VU는 항상 같은 테이블 → 세션 충돌 방지
+  const tableNum = (Math.floor((__VU - 1) / data.booths.length) % tableMaxCnt) + 1;
 
   // ── Step 1. 테이블 입장 ──────────────────────
   let tableUsageId;
@@ -255,7 +270,6 @@ export function customerFlow(data) {
     check(res, { 'menu_list 200': (r) => r.status === 200 });
   });
 
-  // 메뉴 탐색 시간
   sleep(rand(3, 7));
 
   // ── Step 3. 장바구니 담기 (1~3개) ───────────
@@ -315,7 +329,7 @@ export function customerFlow(data) {
   // 핵심 엔드포인트 — 주문 누락 원인 지점
   group('06_payment_confirm', () => {
     if (!cartIsPending) {
-      // payment_info 가 실패했거나 다른 VU가 이미 처리한 케이스 — 스킵
+      // payment_info 실패 또는 다른 VU가 이미 처리 — 스킵
       return;
     }
 
@@ -327,8 +341,7 @@ export function customerFlow(data) {
     );
     paymentConfirmDuration.add(Date.now() - start);
 
-    // 409 CART_NOT_PENDING: 버스트 구간에서 VU 수 > 테이블 수로 인한 경합
-    // → 실제 장애가 아니므로 에러로 집계하지 않고 조용히 스킵
+    // 409 CART_NOT_PENDING: 버스트 구간 VU > 테이블 수 경합 → 실제 장애 아님
     if (res.status === 409) {
       console.log(
         `[payment_confirm 409-skip] table_usage_id=${tableUsageId} — VU 경합 스킵`,
@@ -363,16 +376,19 @@ export function customerFlow(data) {
 }
 
 // ──────────────────────────────────────────────
-// 시나리오 B: 부스 어드민 WebSocket 수신 감시
+// 시나리오 B: 어드민 WebSocket 수신 감시
 //
-// 1 VU가 테스트 전 구간 연결을 유지하며 ADMIN_NEW_ORDER 이벤트를 계수한다.
-// 테스트 종료 후 출력되는 두 지표를 비교하면 실제 누락 건수를 확인할 수 있다:
-//   orders_created  — 고객이 결제 완료한 주문 수
-//   orders_received — 어드민 화면에 실제로 도달한 주문 수
+// 어드민 N명이 각자 자기 부스 WS에 연결해 ADMIN_NEW_ORDER 이벤트를 계수.
+// 부스가 서로 다르므로 이벤트 중복 없음.
+//
+//   orders_received ≈ orders_created   → 완전 전달
+//   orders_created − orders_received   → 실제 누락 건수
 // ──────────────────────────────────────────────
 export function adminWsListener(data) {
-  const { accessToken } = data;
-  const wsUrl = `${WS_BASE}/ws/django/booth/orders/management/`;
+  // 어드민 VU → 부스 분산 (손님과 동일한 모듈러 방식)
+  const booth       = data.booths[(__VU - 1) % data.booths.length];
+  const { accessToken, boothUuid } = booth;
+  const wsUrl       = `${WS_BASE}/ws/django/booth/orders/management/`;
 
   const res = ws.connect(
     wsUrl,
@@ -381,7 +397,7 @@ export function adminWsListener(data) {
     function (socket) {
 
       socket.on('open', () => {
-        console.log(`[Admin WS] 연결됨 → ${wsUrl}`);
+        console.log(`[Admin WS] booth=${boothUuid.slice(0, 8)}… 연결됨`);
       });
 
       socket.on('message', (raw) => {
@@ -393,10 +409,10 @@ export function adminWsListener(data) {
             const orders = (msg.data && msg.data.orders) || [];
             if (orders.length > 0) {
               ordersReceived.add(orders.length);
-              console.log(`[Admin WS] ADMIN_NEW_ORDER 수신 — ${orders.length}건`);
+              console.log(`[Admin WS] booth=${boothUuid.slice(0, 8)}… ADMIN_NEW_ORDER ${orders.length}건`);
             } else {
-              // orders 배열이 빈 경우 = DB에서 주문 조회 실패 (잠재적 누락)
-              console.warn('[Admin WS] ADMIN_NEW_ORDER 수신 — orders 비어 있음 (조회 실패?)');
+              // orders 배열이 빈 경우 = DB 조회 실패 (잠재적 누락)
+              console.warn(`[Admin WS] booth=${boothUuid.slice(0, 8)}… ADMIN_NEW_ORDER 수신 — orders 비어 있음`);
             }
             break;
           }
@@ -413,24 +429,23 @@ export function adminWsListener(data) {
         // 1000 = 정상 종료, 1001 = Going Away (서버 재시작 등)
         if (code !== 1000 && code !== 1001) {
           wsDisconnects.add(1);
-          console.warn(`[Admin WS] 비정상 종료 — code=${code}`);
+          console.warn(`[Admin WS] booth=${boothUuid.slice(0, 8)}… 비정상 종료 — code=${code}`);
         } else {
-          console.log(`[Admin WS] 정상 종료 — code=${code}`);
+          console.log(`[Admin WS] booth=${boothUuid.slice(0, 8)}… 정상 종료 — code=${code}`);
         }
       });
 
       socket.on('error', (e) => {
         wsDisconnects.add(1);
-        console.error('[Admin WS] 에러:', e);
+        console.error(`[Admin WS] booth=${boothUuid.slice(0, 8)}… 에러:`, e);
       });
 
       // 30초마다 PING 전송 → 서버 PONG 응답으로 연결 생존 확인
-      // (서버 측 HEARTBEAT_INTERVAL=25s 와 겹치지 않게 30s로 설정)
       socket.setInterval(() => {
         socket.send(JSON.stringify({ type: 'PING' }));
       }, 30000);
 
-      // 테스트 종료 시 정상 닫기 (18m 20s — duration보다 10s 짧게)
+      // 테스트 종료 시 정상 닫기 (18m 20s)
       socket.setTimeout(() => {
         socket.close(1000);
       }, (18 * 60 + 20) * 1000);
