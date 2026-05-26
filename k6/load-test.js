@@ -11,9 +11,9 @@
  *   스트레스: 55 VU (×3배, 장애 임계점 탐색)
  *
  * 시나리오 구성:
- *   A. peak_load       — 고객 HTTP 주문 플로우 (35→55 VU)
- *   B. admin_ws_listener — 부스 어드민 WS 연결 유지 + 수신 이벤트 계수
- *      ordersCreated(결제 완료) vs ordersReceived(어드민 수신) 차이 = 실제 주문 누락 건수
+ *   A. peak_load        — 손님 HTTP 주문 플로우 (35→55 VU)
+ *   B. admin_ws_listener — 부스 어드민 10명 WS 동시 연결 유지 + 수신 이벤트 계수
+ *      누락 건수 = orders_created − (orders_received ÷ 10)
  *
  * 실행 방법 (EC2 서버 위에서 실행):
  *   # nginx 로컬 직접 호출 (보안그룹 우회, Cloudflare 불필요)
@@ -74,12 +74,18 @@ export const options = {
 
     /**
      * B. 부스 어드민 WebSocket 감시
-     * 1 VU가 테스트 전 구간 연결 유지 → ADMIN_NEW_ORDER 이벤트 카운트
+     * 10 VU가 테스트 전 구간 각자 연결 유지 → ADMIN_NEW_ORDER 이벤트 계수
+     *
+     * ⚠ orders_received 해석:
+     *   10명의 어드민이 각각 동일한 ADMIN_NEW_ORDER 이벤트를 수신·집계하므로
+     *   orders_received ≒ orders_created × 10  (완전 전달 시)
+     *   실제 어드민 1인당 수신율 = orders_received ÷ 10
+     *   누락 건수 = orders_created − (orders_received ÷ 10)
      */
     admin_ws_listener: {
       executor:     'constant-vus',
       exec:         'adminWsListener',
-      vus:          1,
+      vus:          10,
       duration:     '18m30s',  // peak_load 전 구간 커버 (+30s 여유)
       gracefulStop: '10s',
     },
@@ -97,8 +103,8 @@ export const options = {
     // 주문 생성 최소 건수 확인
     orders_created:         ['count>100'],
 
-    // WS 비정상 종료 허용 한도 (워커 재시작 등 의도된 재연결 제외)
-    ws_disconnects:         ['count<3'],
+    // WS 비정상 종료 허용 한도 (10명 기준, 워커 재시작 등 의도된 재연결 제외)
+    ws_disconnects:         ['count<10'],
   },
 };
 
