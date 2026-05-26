@@ -10,9 +10,20 @@
  *   엄격  : 35 VU  (×2배, 피크 버스트 반영) ← 기본값
  *   스트레스: 55 VU (×3배, 장애 임계점 탐색)
  *
- * 실행 방법:
+ * 실행 방법 (EC2 서버 위에서 실행):
+ *   # k6 설치
+ *   sudo gpg -k
+ *   sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
+ *     --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+ *   echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
+ *     | sudo tee /etc/apt/sources.list.d/k6.list
+ *   sudo apt-get update && sudo apt-get install k6
+ *
+ *   # nginx 로컬 직접 호출 (보안그룹 우회, Cloudflare 불필요)
+ *   k6 run -e BASE_URL=http://localhost k6/load-test.js
+ *
+ *   # 외부에서 실행 시 (Cloudflare 경유)
  *   k6 run k6/load-test.js
- *   k6 run -e BASE_URL=https://dorder-api.shop k6/load-test.js
  */
 
 import http from 'k6/http';
