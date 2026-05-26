@@ -121,12 +121,13 @@ export function setup() {
   console.log(`setup: 로그인 성공 — booth_name="${loginData.booth_name}"`);
 
   // JWT access_token 추출 (WS 핸드셰이크 Cookie 헤더에 사용)
+  // access_token은 HttpOnly 쿠키 → jar.cookiesForURL()로는 읽히지 않음.
+  // response.cookies는 k6 클라이언트 수준에서 모든 쿠키(HttpOnly 포함)를 반환한다.
   // StaleCookiePurgeMiddleware가 delete-cookie를 함께 부착하므로
   // value가 비어 있지 않은 마지막 항목을 선택한다.
-  const loginCookies = jar.cookiesForURL(`${BASE_URL}`);
   let accessToken = '';
-  if (loginCookies.access_token) {
-    for (const c of loginCookies.access_token) {
+  if (loginRes.cookies && loginRes.cookies.access_token) {
+    for (const c of loginRes.cookies.access_token) {
       if (c.value) accessToken = c.value;
     }
   }
@@ -163,10 +164,10 @@ export function setup() {
   // ── 5. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
   //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 — X-CSRFToken 헤더 필요
   const csrfRes = http.get(`${BASE_URL}/api/v3/django/auth/csrf-token/`, { jar });
-  const csrfCookies = jar.cookiesForURL(`${BASE_URL}`);
+  // csrftoken은 HttpOnly가 아니지만 response.cookies로 일관성 있게 읽는다.
   let csrfToken = '';
-  if (csrfCookies.csrftoken) {
-    for (const c of csrfCookies.csrftoken) {
+  if (csrfRes.cookies && csrfRes.cookies.csrftoken) {
+    for (const c of csrfRes.cookies.csrftoken) {
       if (c.value) csrfToken = c.value;
     }
   }
