@@ -1,5 +1,5 @@
 /**
- * D-Order 고객 주문 플로우 부하테스트
+ * D-Order 고객 주문 플로우 부하테스트 (WebSocket 감시 포함)
  *
  * GA 실측 기반 (2026-05-25~26):
  *   활성 사용자 435명, 세션당 조회 10.63회, 평균 참여시간 63초
@@ -10,58 +10,58 @@
  *   엄격  : 35 VU  (×2배, 피크 버스트 반영) ← 기본값
  *   스트레스: 55 VU (×3배, 장애 임계점 탐색)
  *
+ * 시나리오 구성:
+ *   A. peak_load       — 고객 HTTP 주문 플로우 (35→55 VU)
+ *   B. admin_ws_listener — 부스 어드민 WS 연결 유지 + 수신 이벤트 계수
+ *      ordersCreated(결제 완료) vs ordersReceived(어드민 수신) 차이 = 실제 주문 누락 건수
+ *
  * 실행 방법 (EC2 서버 위에서 실행):
- *   # k6 설치
- *   sudo gpg -k
- *   sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg \
- *     --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
- *   echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" \
- *     | sudo tee /etc/apt/sources.list.d/k6.list
- *   sudo apt-get update && sudo apt-get install k6
- *
  *   # nginx 로컬 직접 호출 (보안그룹 우회, Cloudflare 불필요)
- *   k6 run -e BASE_URL=http://localhost k6/load-test.js
- *
- *   # 외부에서 실행 시 (Cloudflare 경유)
- *   k6 run k6/load-test.js
+ *   k6 run -e BASE_URL=https://localhost ~/load-test.js
  */
 
 import http from 'k6/http';
+import ws   from 'k6/ws';
 import { check, sleep, group } from 'k6';
 import { Counter, Trend } from 'k6/metrics';
 
 // ──────────────────────────────────────────────
-// 환경변수 (BASE_URL만 오버라이드 가능)
+// 환경변수
 // ──────────────────────────────────────────────
 const BASE_URL = __ENV.BASE_URL || 'https://dorder-api.shop';
+// https → wss, http → ws  (WebSocket URL 자동 변환)
+const WS_BASE  = BASE_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
 
 // 부스 어드민 계정 (setup에서 BOOTH_UUID + TABLE_COUNT 자동 조회용)
 const ADMIN_USERNAME = 'test77';
 const ADMIN_PASSWORD = 'test';
 
 // ──────────────────────────────────────────────
-// 커스텀 메트릭 (payment-confirm 집중 관측)
+// 커스텀 메트릭
 // ──────────────────────────────────────────────
 const paymentConfirmDuration = new Trend('payment_confirm_ms', true);
 const paymentConfirmErrors   = new Counter('payment_confirm_errors');
-const ordersCreated          = new Counter('orders_created');
+const ordersCreated          = new Counter('orders_created');    // 고객 결제 완료
 const tableEnterErrors       = new Counter('table_enter_errors');
+const ordersReceived         = new Counter('orders_received');   // 어드민 WS 실제 수신
+const wsDisconnects          = new Counter('ws_disconnects');    // 비정상 WS 종료
 
 // ──────────────────────────────────────────────
 // 시나리오 & 임계값
 // ──────────────────────────────────────────────
 export const options = {
-  // localhost 실행 시 HTTP→HTTPS 리다이렉트에서 인증서 호스트명 불일치 우회
+  // localhost 실행 시 TLS 인증서 호스트명 불일치 우회 (HTTP + WS 공통 적용)
   insecureSkipTLSVerify: true,
 
   scenarios: {
     /**
-     * 엄격 피크 시나리오 (GA 실측 ×2)
-     * ramp-up 2m → 피크 10m → 버스트 3m → ramp-down 1m (총 18분)
+     * A. 고객 주문 플로우
+     * ramp-up 2m → 피크 10m → 버스트 3m → ramp-down 1m (총 16m)
      */
     peak_load: {
-      executor: 'ramping-vus',
-      startVUs: 0,
+      executor:         'ramping-vus',
+      exec:             'customerFlow',
+      startVUs:         0,
       stages: [
         { duration: '2m',  target: 35 }, // ramp-up
         { duration: '10m', target: 35 }, // 피크 유지 (엄격 기준 35 VU)
@@ -70,6 +70,18 @@ export const options = {
         { duration: '1m',  target: 0  }, // ramp-down
       ],
       gracefulRampDown: '30s',
+    },
+
+    /**
+     * B. 부스 어드민 WebSocket 감시
+     * 1 VU가 테스트 전 구간 연결 유지 → ADMIN_NEW_ORDER 이벤트 카운트
+     */
+    admin_ws_listener: {
+      executor:     'constant-vus',
+      exec:         'adminWsListener',
+      vus:          1,
+      duration:     '18m30s',  // peak_load 전 구간 커버 (+30s 여유)
+      gracefulStop: '10s',
     },
   },
 
@@ -82,13 +94,16 @@ export const options = {
     payment_confirm_ms:     ['p(95)<3000', 'p(99)<8000'],
     payment_confirm_errors: ['count<5'],
 
-    // 최소 주문 생성 확인
+    // 주문 생성 최소 건수 확인
     orders_created:         ['count>100'],
+
+    // WS 비정상 종료 허용 한도 (워커 재시작 등 의도된 재연결 제외)
+    ws_disconnects:         ['count<3'],
   },
 };
 
 // ──────────────────────────────────────────────
-// setup: 어드민 로그인으로 BOOTH_UUID + TABLE_COUNT 자동 조회
+// setup: 어드민 로그인 → BOOTH_UUID·TABLE_COUNT·accessToken 자동 조회
 // ──────────────────────────────────────────────
 export function setup() {
   const jar = http.cookieJar();
@@ -99,32 +114,35 @@ export function setup() {
     JSON.stringify({ username: ADMIN_USERNAME, password: ADMIN_PASSWORD }),
     { headers: { 'Content-Type': 'application/json' }, jar },
   );
-
   if (loginRes.status !== 200) {
-    throw new Error(
-      `setup: 로그인 실패 (HTTP ${loginRes.status})\n${loginRes.body}`,
-    );
+    throw new Error(`setup: 로그인 실패 (HTTP ${loginRes.status})\n${loginRes.body}`);
   }
-
   const loginData = JSON.parse(loginRes.body).data;
   console.log(`setup: 로그인 성공 — booth_name="${loginData.booth_name}"`);
 
-  // ── 2. QR URL 조회 (access_token 쿠키 자동 전송)
-  const qrRes = http.get(
-    `${BASE_URL}/api/v3/django/booth/mypage/qr-download/`,
-    { jar },
-  );
-
-  if (qrRes.status !== 200) {
-    throw new Error(
-      `setup: QR URL 조회 실패 (HTTP ${qrRes.status})\n${qrRes.body}`,
-    );
+  // JWT access_token 추출 (WS 핸드셰이크 Cookie 헤더에 사용)
+  // StaleCookiePurgeMiddleware가 delete-cookie를 함께 부착하므로
+  // value가 비어 있지 않은 마지막 항목을 선택한다.
+  const loginCookies = jar.cookiesForURL(`${BASE_URL}`);
+  let accessToken = '';
+  if (loginCookies.access_token) {
+    for (const c of loginCookies.access_token) {
+      if (c.value) accessToken = c.value;
+    }
   }
+  if (!accessToken) {
+    throw new Error('setup: access_token 쿠키를 찾을 수 없습니다.');
+  }
+  console.log('setup: access_token 획득 완료');
 
+  // ── 2. QR URL 조회
+  const qrRes = http.get(`${BASE_URL}/api/v3/django/booth/mypage/qr-download/`, { jar });
+  if (qrRes.status !== 200) {
+    throw new Error(`setup: QR URL 조회 실패 (HTTP ${qrRes.status})\n${qrRes.body}`);
+  }
   const qrImageUrl = JSON.parse(qrRes.body).data.qr_image_url;
 
-  // ── 3. QR 이미지 URL에서 booth UUID 추출
-  //    URL 패턴: .../booth_<uuid>_qr.png
+  // ── 3. QR URL에서 booth UUID 추출
   const uuidMatch = qrImageUrl.match(
     /booth_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})_qr/i,
   );
@@ -135,29 +153,16 @@ export function setup() {
   console.log(`setup: BOOTH_UUID = ${boothUuid}`);
 
   // ── 4. mypage에서 table_max_cnt 조회
-  const mypageRes = http.get(
-    `${BASE_URL}/api/v3/django/booth/mypage/`,
-    { jar },
-  );
-
+  const mypageRes = http.get(`${BASE_URL}/api/v3/django/booth/mypage/`, { jar });
   if (mypageRes.status !== 200) {
-    throw new Error(
-      `setup: mypage 조회 실패 (HTTP ${mypageRes.status})\n${mypageRes.body}`,
-    );
+    throw new Error(`setup: mypage 조회 실패 (HTTP ${mypageRes.status})\n${mypageRes.body}`);
   }
-
   const tableMaxCnt = JSON.parse(mypageRes.body).data.table_max_cnt || 10;
   console.log(`setup: TABLE_COUNT = ${tableMaxCnt}`);
 
   // ── 5. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
   //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 — X-CSRFToken 헤더 필요
-  const csrfRes = http.get(
-    `${BASE_URL}/api/v3/django/auth/csrf-token/`,
-    { jar },
-  );
-
-  // StaleCookiePurgeMiddleware가 동명의 delete-cookie를 함께 부착하므로
-  // value가 비어 있지 않은 마지막 항목을 사용한다.
+  const csrfRes = http.get(`${BASE_URL}/api/v3/django/auth/csrf-token/`, { jar });
   const csrfCookies = jar.cookiesForURL(`${BASE_URL}`);
   let csrfToken = '';
   if (csrfCookies.csrftoken) {
@@ -165,7 +170,6 @@ export function setup() {
       if (c.value) csrfToken = c.value;
     }
   }
-
   if (csrfToken) {
     const resetRes = http.del(
       `${BASE_URL}/api/v3/django/booth/mypage/reset-table-data/`,
@@ -178,31 +182,23 @@ export function setup() {
   }
 
   // ── 6. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
-  const menuRes = http.get(
-    `${BASE_URL}/api/v3/django/booth/${boothUuid}/menu-list/`,
-  );
-
+  const menuRes = http.get(`${BASE_URL}/api/v3/django/booth/${boothUuid}/menu-list/`);
   if (menuRes.status !== 200) {
-    throw new Error(
-      `setup: menu-list 조회 실패 (HTTP ${menuRes.status})\n${menuRes.body}`,
-    );
+    throw new Error(`setup: menu-list 조회 실패 (HTTP ${menuRes.status})\n${menuRes.body}`);
   }
-
   const d = JSON.parse(menuRes.body).data;
-
   const menuIds = [
-    ...( d.MENU  || [] ).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
-    ...( d.DRINK || [] ).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
+    ...(d.MENU  || []).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
+    ...(d.DRINK || []).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
   ];
-  const setIds = ( d.SET || [] ).filter(s => !s.is_soldout && s.stock > 0).map(s => s.id);
+  const setIds = (d.SET || []).filter(s => !s.is_soldout && s.stock > 0).map(s => s.id);
 
   if (menuIds.length === 0) {
     throw new Error('setup: 주문 가능한 메뉴가 없습니다. 재고를 확인하세요.');
   }
-
   console.log(`setup 완료 — 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
 
-  return { boothUuid, tableMaxCnt, menuIds, setIds };
+  return { boothUuid, tableMaxCnt, menuIds, setIds, accessToken };
 }
 
 // ──────────────────────────────────────────────
@@ -211,10 +207,10 @@ export function setup() {
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 // ──────────────────────────────────────────────
-// 메인 VU 시나리오: 고객 전체 주문 플로우
+// 시나리오 A: 고객 전체 주문 플로우
 // (고객 엔드포인트는 모두 authentication_classes=[] — 인증 불필요)
 // ──────────────────────────────────────────────
-export default function (data) {
+export function customerFlow(data) {
   const { boothUuid, tableMaxCnt, menuIds, setIds } = data;
   // VU별 고정 테이블 배정 — 동일 VU는 항상 같은 테이블 → 세션 충돌 방지
   // VU 수 > tableMaxCnt 인 버스트 구간에서는 모듈러로 자연스럽게 순환
@@ -275,7 +271,6 @@ export default function (data) {
           quantity:       randomInt(1, 2),
         };
       }
-
       const res = http.post(
         `${BASE_URL}/api/v3/django/cart/`,
         JSON.stringify(body),
@@ -358,6 +353,84 @@ export default function (data) {
   });
 
   sleep(rand(5, 15));
+}
+
+// ──────────────────────────────────────────────
+// 시나리오 B: 부스 어드민 WebSocket 수신 감시
+//
+// 1 VU가 테스트 전 구간 연결을 유지하며 ADMIN_NEW_ORDER 이벤트를 계수한다.
+// 테스트 종료 후 출력되는 두 지표를 비교하면 실제 누락 건수를 확인할 수 있다:
+//   orders_created  — 고객이 결제 완료한 주문 수
+//   orders_received — 어드민 화면에 실제로 도달한 주문 수
+// ──────────────────────────────────────────────
+export function adminWsListener(data) {
+  const { accessToken } = data;
+  const wsUrl = `${WS_BASE}/ws/django/booth/orders/management/`;
+
+  const res = ws.connect(
+    wsUrl,
+    // JWT 쿠키를 WebSocket 핸드셰이크 Cookie 헤더에 포함
+    { headers: { Cookie: `access_token=${accessToken}` } },
+    function (socket) {
+
+      socket.on('open', () => {
+        console.log(`[Admin WS] 연결됨 → ${wsUrl}`);
+      });
+
+      socket.on('message', (raw) => {
+        let msg;
+        try { msg = JSON.parse(raw); } catch { return; }
+
+        switch (msg.type) {
+          case 'ADMIN_NEW_ORDER': {
+            const orders = (msg.data && msg.data.orders) || [];
+            if (orders.length > 0) {
+              ordersReceived.add(orders.length);
+              console.log(`[Admin WS] ADMIN_NEW_ORDER 수신 — ${orders.length}건`);
+            } else {
+              // orders 배열이 빈 경우 = DB에서 주문 조회 실패 (잠재적 누락)
+              console.warn('[Admin WS] ADMIN_NEW_ORDER 수신 — orders 비어 있음 (조회 실패?)');
+            }
+            break;
+          }
+          case 'PONG':
+            // 서버 heartbeat — 무시
+            break;
+          default:
+            // ADMIN_ORDER_SNAPSHOT, ADMIN_ORDER_UPDATE 등 — 무시
+            break;
+        }
+      });
+
+      socket.on('close', (code) => {
+        // 1000 = 정상 종료, 1001 = Going Away (서버 재시작 등)
+        if (code !== 1000 && code !== 1001) {
+          wsDisconnects.add(1);
+          console.warn(`[Admin WS] 비정상 종료 — code=${code}`);
+        } else {
+          console.log(`[Admin WS] 정상 종료 — code=${code}`);
+        }
+      });
+
+      socket.on('error', (e) => {
+        wsDisconnects.add(1);
+        console.error('[Admin WS] 에러:', e);
+      });
+
+      // 30초마다 PING 전송 → 서버 PONG 응답으로 연결 생존 확인
+      // (서버 측 HEARTBEAT_INTERVAL=25s 와 겹치지 않게 30s로 설정)
+      socket.setInterval(() => {
+        socket.send(JSON.stringify({ type: 'PING' }));
+      }, 30000);
+
+      // 테스트 종료 시 정상 닫기 (18m 20s — duration보다 10s 짧게)
+      socket.setTimeout(() => {
+        socket.close(1000);
+      }, (18 * 60 + 20) * 1000);
+    },
+  );
+
+  check(res, { 'admin_ws 101': (r) => r && r.status === 101 });
 }
 
 // ──────────────────────────────────────────────
