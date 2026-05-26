@@ -86,25 +86,8 @@ def _ensure_table_usage_alive(table_usage: TableUsage):
 
 
 def _restore_if_pending_expired(cart: Cart) -> bool:
-    """
-    PENDING 상태인데 결제 대기 시간이 만료되었거나,
-    예전 코드로 인해 pending_expires_at이 null로 남은 경우 ACTIVE로 복구한다.
-    """
-    if cart.status != Cart.Status.PENDING:
-        return False
 
-    if cart.pending_expires_at is not None and cart.pending_expires_at > timezone.now():
-        return False
-
-    logger.info(
-        f"[Cart] PENDING_RESTORED table_usage_id={cart.table_usage_id} "
-        f"expired_at={cart.pending_expires_at}"
-    )
-
-    cart.status = Cart.Status.ACTIVE
-    cart.pending_expires_at = None
-    cart.save(update_fields=["status", "pending_expires_at"])
-    return True
+    return False
 
 
 def _sync_item_prices_to_latest(cart: Cart) -> None:
@@ -246,31 +229,13 @@ def _get_pending_reserved_menu_quantity_map(
     return reserved_map
 
 def _cleanup_invalid_pending_carts(*, booth_id: int | None = None):
+    """
+    PENDING 자동 복구 정책 제거.
 
-    now = timezone.now()
-
-    qs = Cart.objects.filter(status=Cart.Status.PENDING)
-
-    if booth_id is not None:
-        qs = qs.filter(table_usage__table__booth_id=booth_id)
-
-    updated_count = (
-        qs.filter(
-            Q(pending_expires_at__isnull=True) |
-            Q(pending_expires_at__lte=now)
-        )
-        .update(
-            status=Cart.Status.ACTIVE,
-            pending_expires_at=None,
-        )
-    )
-
-    if updated_count:
-        logger.info(
-            "[Cart] INVALID_PENDING_CLEANED booth_id=%s count=%s",
-            booth_id,
-            updated_count,
-        )
+    pending_expires_at이 지났다고 해서 cart.status를 ACTIVE로 바꾸지 않는다.
+    pending_expires_at은 재고 예약 계산에서만 사용한다.
+    """
+    return
 
 
 # 현재 cart 필요 수량 + 다른 PENDING cart 예약 수량까지 고려해서 검증
@@ -715,9 +680,6 @@ def delete_item(*, table_usage_id: int, cart_item_id: int):
 
 @transaction.atomic
 def enter_payment_info(*, table_usage_id: int):
-    # 예전 코드로 인해 남아있는 비정상 PENDING cart를 먼저 정리
-    _cleanup_invalid_pending_carts()
-
     cart = get_or_create_cart_by_table_usage(table_usage_id)
 
     logger.info(
