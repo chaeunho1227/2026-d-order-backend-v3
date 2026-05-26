@@ -182,8 +182,8 @@ services:
       --timeout 60
       --graceful-timeout 30
       --keep-alive 5
-      --max-requests 1000
-      --max-requests-jitter 100
+      --max-requests 10000
+      --max-requests-jitter 2000
       --access-logfile -
       --logger-class project.gunicorn_logger.HealthFilteringLogger
       --forwarded-allow-ips '*'
@@ -257,8 +257,8 @@ services:
       --timeout 60
       --graceful-timeout 30
       --keep-alive 5
-      --max-requests 1000
-      --max-requests-jitter 100
+      --max-requests 10000
+      --max-requests-jitter 2000
       --access-logfile -
       --logger-class project.gunicorn_logger.HealthFilteringLogger
       --forwarded-allow-ips '*'
