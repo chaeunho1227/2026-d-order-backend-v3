@@ -5,29 +5,30 @@
  *   활성 사용자 435명, 세션당 조회 10.63회, 평균 참여시간 63초
  *   Cloudflare 1,000 visits/hour → Little's Law → 동시 접속 ~18명
  *
- * VU 설정:
- *   기준  : 18 VU  (실측값)
- *   엄격  : 35 VU  (×2배, 피크 버스트 반영) ← 기본값
- *   스트레스: 55 VU (×3배, 장애 임계점 탐색)
+ * VU 설정 (부스 8개 기준):
+ *   어드민 : 부스당 8명 × 8부스 = 64 VU  (ADMIN_VUS_PER_BOOTH)
+ *   손님   : 부스당 50명 × 8부스 = 400 VU (CUSTOMER_VUS_PER_BOOTH)
  *
  * 시나리오 구성:
- *   A. peak_load        — 손님 HTTP 주문 플로우 (35→55 VU, 부스 분산)
- *   B. admin_ws_listener — 어드민 N명이 각자 자기 부스 WS 연결 유지
+ *   A. peak_load        — 손님 HTTP 주문 플로우 (400 VU, 부스 분산)
+ *   B. admin_ws_listener — 어드민 64명이 각자 자기 부스 WS 연결 유지
  *      어드민마다 다른 부스를 감시하므로 orders_received ≈ orders_created
  *      (누락 건수 = orders_created − orders_received)
  *
  * 실행 방법 (EC2 서버 위에서 실행):
- *   # 단일 부스 (기본)
- *   k6 run -e BASE_URL=https://dorder-api.shop ~/load-test.js
+ *   # 부스당 어드민 8명, 손님 50명 (기본)
+ *   k6 run -e BASE_URL=https://dorder-api.shop \
+ *           -e ADMIN_CREDS='test77:test,...,test84:test' \
+ *           -e ADMIN_VUS_PER_BOOTH=8 \
+ *           -e CUSTOMER_VUS_PER_BOOTH=50 \
+ *           ~/load-test.js
  *
  *   # localhost 로 직접 연결 시 (Cloudflare 우회, WS_ORIGIN 필수)
  *   k6 run -e BASE_URL=https://localhost \
  *           -e WS_ORIGIN=https://dorder-api.shop \
- *           ~/load-test.js
- *
- *   # 다중 부스 (어드민 계정 목록을 콤마로 구분, user:pass 형식)
- *   k6 run -e BASE_URL=https://dorder-api.shop \
- *           -e ADMIN_CREDS='test77:test,test78:test,test79:test,...' \
+ *           -e ADMIN_CREDS='test77:test,...,test84:test' \
+ *           -e ADMIN_VUS_PER_BOOTH=8 \
+ *           -e CUSTOMER_VUS_PER_BOOTH=50 \
  *           ~/load-test.js
  *
  * ★ WS_ORIGIN 주의 ★
@@ -65,6 +66,16 @@ const ADMIN_CREDS = (__ENV.ADMIN_CREDS || 'test77:test')
 
 const ADMIN_COUNT = ADMIN_CREDS.length;
 
+// 부스당 VU 수 — 환경변수로 오버라이드 가능
+// ADMIN_VUS_PER_BOOTH   : 부스당 어드민 WS VU (기본 1 → 8부스×1=8)
+// CUSTOMER_VUS_PER_BOOTH: 부스당 손님 HTTP VU (기본 4 → 8부스×4=32)
+const ADMIN_VUS_PER_BOOTH    = parseInt(__ENV.ADMIN_VUS_PER_BOOTH    || '1');
+const CUSTOMER_VUS_PER_BOOTH = parseInt(__ENV.CUSTOMER_VUS_PER_BOOTH || '4');
+
+// 총 VU 수 (ADMIN_COUNT = 부스 수)
+const TOTAL_ADMIN_VUS    = ADMIN_COUNT * ADMIN_VUS_PER_BOOTH;    // 기본: 8×1=8, 요청시: 8×8=64
+const TOTAL_CUSTOMER_VUS = ADMIN_COUNT * CUSTOMER_VUS_PER_BOOTH; // 기본: 8×4=32, 요청시: 8×50=400
+
 // ──────────────────────────────────────────────
 // 커스텀 메트릭
 // ──────────────────────────────────────────────
@@ -85,32 +96,32 @@ export const options = {
   scenarios: {
     /**
      * A. 손님 주문 플로우
-     * ramp-up 2m → 피크 10m → 버스트 3m → ramp-down 1m (총 18m)
-     * VU는 __VU % ADMIN_COUNT 로 부스를 분산 배정
+     * ramp-up 3m → 피크 13m → ramp-down 2m (총 18m)
+     * VU는 (__VU - 1) % ADMIN_COUNT 로 부스를 분산 배정
+     * 기본(4/부스): 32 VU | CUSTOMER_VUS_PER_BOOTH=50 시: 400 VU
      */
     peak_load: {
       executor:         'ramping-vus',
       exec:             'customerFlow',
       startVUs:         0,
       stages: [
-        { duration: '2m',  target: 35 }, // ramp-up
-        { duration: '10m', target: 35 }, // 피크 유지 (엄격 기준 35 VU)
-        { duration: '2m',  target: 55 }, // 버스트: ×3배
-        { duration: '3m',  target: 55 }, // 버스트 유지
-        { duration: '1m',  target: 0  }, // ramp-down
+        { duration: '3m',  target: TOTAL_CUSTOMER_VUS }, // ramp-up
+        { duration: '13m', target: TOTAL_CUSTOMER_VUS }, // 피크 유지
+        { duration: '2m',  target: 0                  }, // ramp-down
       ],
       gracefulRampDown: '30s',
     },
 
     /**
      * B. 어드민 WebSocket 감시
-     * ADMIN_COUNT VU 각자 자기 부스 WS 연결 유지 → ADMIN_NEW_ORDER 이벤트 계수
+     * TOTAL_ADMIN_VUS 각자 자기 부스 WS 연결 유지 → ADMIN_NEW_ORDER 이벤트 계수
      * 부스가 다르므로 이벤트 중복 없음 → orders_received ≈ orders_created
+     * 기본(1/부스): 8 VU | ADMIN_VUS_PER_BOOTH=8 시: 64 VU
      */
     admin_ws_listener: {
       executor:     'constant-vus',
       exec:         'adminWsListener',
-      vus:          ADMIN_COUNT,
+      vus:          TOTAL_ADMIN_VUS,
       duration:     '18m30s',  // peak_load 전 구간 커버 (+30s 여유)
       gracefulStop: '10s',
     },
@@ -125,11 +136,11 @@ export const options = {
     payment_confirm_ms:     ['p(95)<3000', 'p(99)<8000'],
     payment_confirm_errors: ['count<5'],
 
-    // 주문 생성 최소 건수
-    orders_created:         ['count>100'],
+    // 주문 생성 최소 건수 (TOTAL_CUSTOMER_VUS × 최소 1회 완료)
+    orders_created:         [`count>${TOTAL_CUSTOMER_VUS}`],
 
-    // WS 비정상 종료 허용 한도 (어드민 수 × 1회 재시작 여유)
-    ws_disconnects:         [`count<${ADMIN_COUNT}`],
+    // WS 비정상 종료 허용 한도 (어드민 VU당 최대 2회 재연결 허용)
+    ws_disconnects:         [`count<${TOTAL_ADMIN_VUS * 2}`],
   },
 };
 
