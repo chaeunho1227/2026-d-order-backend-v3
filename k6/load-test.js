@@ -244,21 +244,29 @@ function setupBooth(cred) {
   if (menuRes.status !== 200) {
     throw new Error(`setup [${username}]: menu-list 조회 실패 (HTTP ${menuRes.status})`);
   }
-  const d = JSON.parse(menuRes.body).data;
+  const parsed   = JSON.parse(menuRes.body);
+  const d        = parsed.data;
+  const seatType = parsed.seat_type || 'NO';   // 'NO' | 'PP' | 'PT'
+
   const menuIds = [
     ...(d.MENU  || []).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
     ...(d.DRINK || []).filter(m => !m.is_soldout && m.stock > 0).map(m => m.id),
   ];
   const setIds = (d.SET || []).filter(s => !s.is_soldout && s.stock > 0).map(s => s.id);
 
+  // FEE 메뉴 수집 (seat_type PP/PT 부스의 첫 round 필수 아이템)
+  // menu-list 응답의 data.FEE 키에서 별도로 제공됨.
+  // 일반 메뉴와 달리 type:'fee' 로만 장바구니에 담을 수 있음.
+  const feeIds = (d.FEE || []).filter(f => !f.is_soldout && f.stock > 0).map(f => f.id);
+
   if (menuIds.length === 0) {
     // 메뉴 없으면 경고만 — WS 감시 테스트는 계속 진행 (고객 주문은 이 부스 제외)
     console.warn(`setup [${username}]: ⚠ 주문 가능 메뉴 없음. Django admin에서 재고 추가 필요. WS 테스트만 진행`);
   } else {
-    console.log(`setup [${username}]: 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
+    console.log(`setup [${username}]: 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개, FEE ${feeIds.length}개 (seat_type=${seatType})`);
   }
 
-  return { boothUuid, tableMaxCnt, menuIds, setIds, accessToken };
+  return { boothUuid, tableMaxCnt, menuIds, setIds, feeIds, seatType, accessToken };
 }
 
 // ──────────────────────────────────────────────
@@ -282,7 +290,7 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' };
 export function customerFlow(data) {
   // VU → 부스 분산: 모든 부스에 손님이 고르게 들어가도록 모듈러 배정
   const booth      = data.booths[(__VU - 1) % data.booths.length];
-  const { boothUuid, tableMaxCnt, menuIds, setIds } = booth;
+  const { boothUuid, tableMaxCnt, menuIds, setIds, feeIds, seatType } = booth;
 
   // 메뉴 없는 부스는 고객 주문 불가 → idle sleep 후 반환 (WS 감시만 진행)
   if (!menuIds || menuIds.length === 0) {
@@ -367,6 +375,22 @@ export function customerFlow(data) {
 
   // ── Step 3. 장바구니 담기 (1~3개) ───────────
   group('03_add_to_cart', () => {
+    // ── 3-0. FEE 아이템 추가 (seat_type PP/PT 부스의 첫 round 필수) ──
+    // _validate_required_fee_for_first_round: round==0 & is_fee_booth & !has_fee_item → 400
+    // 일반 메뉴와 달리 type:'fee' 로만 담을 수 있으며, 이미 있으면 수량이 누적됨(멱등).
+    // round>0 이거나 seat_type=NO 이면 서버가 조용히 처리하거나 에러 없이 통과.
+    if (seatType !== 'NO' && feeIds.length > 0) {
+      const feeRes = http.post(
+        `${BASE_URL}/api/v3/django/cart/`,
+        JSON.stringify({ table_usage_id: tableUsageId, type: 'fee', menu_id: feeIds[0], quantity: 1 }),
+        { headers: JSON_HEADERS },
+      );
+      if (feeRes.status !== 200) {
+        console.warn(`[FEE add] HTTP ${feeRes.status} table_usage_id=${tableUsageId} body=${feeRes.body.slice(0,120)}`);
+      }
+      sleep(rand(0.2, 0.5));
+    }
+
     const count = randomInt(1, 3);
     for (let i = 0; i < count; i++) {
       let body;
@@ -413,7 +437,11 @@ export function customerFlow(data) {
       { headers: JSON_HEADERS },
     );
     const ok = check(res, { 'payment_info 200': (r) => r.status === 200 });
-    if (ok) cartIsPending = true;
+    if (ok) {
+      cartIsPending = true;
+    } else {
+      console.warn(`[payment_info FAIL] HTTP ${res.status} table_usage_id=${tableUsageId} body=${res.body.slice(0, 200)}`);
+    }
   });
 
   sleep(rand(1, 3));
