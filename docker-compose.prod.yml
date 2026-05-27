@@ -125,6 +125,10 @@ services:
   # ASGI worker 다중화 환경에서 Django/Spring 의 PG connection 폭주를
   # transaction pooling 으로 흡수. Django 6.0 + UvicornWorker 의 thread-local
   # connection 누수 패턴을 PG 쪽에서 격리한다.
+  #
+  # 풀 사이즈 기준 (m7i.xlarge, GUNICORN_WORKERS=8):
+  #   Django 8 workers × 동시 DB 스레드 + Spring HikariCP 10 ≒ 50
+  #   DEFAULT_POOL_SIZE=40 + RESERVE 5 = 여유 충분
   pgbouncer:
     image: edoburu/pgbouncer:v1.24.1-p1
     container_name: d-order-pgbouncer-prod
@@ -141,7 +145,7 @@ services:
       AUTH_DBNAME: ${POSTGRES_DB}
       POOL_MODE: transaction
       MAX_CLIENT_CONN: 500
-      DEFAULT_POOL_SIZE: 25
+      DEFAULT_POOL_SIZE: 40   # 25 → 40 (GUNICORN_WORKERS=8 기준, Django 8 + Spring 10 + 여유)
       MIN_POOL_SIZE: 10
       RESERVE_POOL_SIZE: 5
       RESERVE_POOL_TIMEOUT: 3
@@ -177,7 +181,7 @@ services:
       gunicorn project.asgi:application
       -k uvicorn.workers.UvicornWorker
       -b 0.0.0.0:8000
-      --workers ${GUNICORN_WORKERS:-4}
+      --workers ${GUNICORN_WORKERS:-8}
       --worker-connections 1000
       --timeout 60
       --graceful-timeout 30
@@ -252,7 +256,7 @@ services:
       gunicorn project.asgi:application
       -k uvicorn.workers.UvicornWorker
       -b 0.0.0.0:8000
-      --workers ${GUNICORN_WORKERS:-4}
+      --workers ${GUNICORN_WORKERS:-8}
       --worker-connections 1000
       --timeout 60
       --graceful-timeout 30
