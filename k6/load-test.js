@@ -18,12 +18,22 @@
  *
  * 실행 방법 (EC2 서버 위에서 실행):
  *   # 단일 부스 (기본)
- *   k6 run -e BASE_URL=https://localhost ~/load-test.js
+ *   k6 run -e BASE_URL=https://dorder-api.shop ~/load-test.js
+ *
+ *   # localhost 로 직접 연결 시 (Cloudflare 우회, WS_ORIGIN 필수)
+ *   k6 run -e BASE_URL=https://localhost \
+ *           -e WS_ORIGIN=https://dorder-api.shop \
+ *           ~/load-test.js
  *
  *   # 다중 부스 (어드민 계정 목록을 콤마로 구분, user:pass 형식)
- *   k6 run -e BASE_URL=https://localhost \
+ *   k6 run -e BASE_URL=https://dorder-api.shop \
  *           -e ADMIN_CREDS='test77:test,test78:test,test79:test,...' \
  *           ~/load-test.js
+ *
+ * ★ WS_ORIGIN 주의 ★
+ *   Django AllowedHostsOriginValidator 는 Origin 헤더를 필수로 검사한다.
+ *   Origin 이 없거나 ALLOWED_HOSTS 에 없으면 WS 연결이 403 으로 거부된다.
+ *   BASE_URL=https://localhost 사용 시 WS_ORIGIN=https://dorder-api.shop 필수.
  */
 
 import http from 'k6/http';
@@ -37,6 +47,12 @@ import { Counter, Trend } from 'k6/metrics';
 const BASE_URL = __ENV.BASE_URL || 'https://dorder-api.shop';
 // https → wss, http → ws  (WebSocket URL 자동 변환)
 const WS_BASE  = BASE_URL.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://');
+
+// AllowedHostsOriginValidator 통과용 Origin.
+// EC2에서 BASE_URL=https://localhost 로 실행할 때도
+// Origin은 반드시 ALLOWED_HOSTS 에 등록된 실제 도메인이어야 함.
+// 기본값: BASE_URL (프로덕션 도메인으로 직접 실행 시 자동 설정)
+const WS_ORIGIN = __ENV.WS_ORIGIN || BASE_URL;
 
 // 어드민 계정 목록 — 환경변수 ADMIN_CREDS로 주입, 기본값 test77:test
 // 형식: 'user1:pass1,user2:pass2,...'
@@ -173,10 +189,18 @@ function setupBooth(cred) {
   console.log(`setup [${username}]: TABLE_COUNT = ${tableMaxCnt}`);
 
   // ── 4. 테이블 데이터 리셋 (이전 테스트 잔류 세션 제거)
-  //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 → X-CSRFToken 헤더 필요
+  //    DELETE는 JWT 쿠키가 있으면 CSRF 검사 → X-CSRFToken 헤더 필요.
+  //    csrf-token endpoint 는 get_token(request) 결과를 body.csrfToken 으로 반환.
+  //    X-CSRFToken 에는 쿠키 raw 값이 아니라 get_token() 반환값을 써야 함.
   const csrfRes = http.get(`${BASE_URL}/api/v3/django/auth/csrf-token/`, { jar });
   let csrfToken = '';
-  if (csrfRes.cookies && csrfRes.cookies.csrftoken) {
+  // body.csrfToken 에서 우선 추출 (Django get_token() 반환값 — 헤더용 마스크 토큰)
+  try {
+    const csrfData = JSON.parse(csrfRes.body);
+    csrfToken = (csrfData.csrfToken) || (csrfData.data && csrfData.data.csrfToken) || '';
+  } catch (_) { /* ignore parse error, fall through to cookie */ }
+  // fallback: 쿠키에서 추출 (구버전 Django 호환 또는 body 파싱 실패 시)
+  if (!csrfToken && csrfRes.cookies && csrfRes.cookies.csrftoken) {
     for (const c of csrfRes.cookies.csrftoken) {
       if (c.value) csrfToken = c.value;
     }
@@ -188,8 +212,11 @@ function setupBooth(cred) {
       { headers: { 'X-CSRFToken': csrfToken }, jar },
     );
     console.log(`setup [${username}]: 테이블 리셋 — HTTP ${resetRes.status}`);
+    if (resetRes.status !== 200) {
+      console.warn(`setup [${username}]: 테이블 리셋 실패 body=${resetRes.body.slice(0, 200)}`);
+    }
   } else {
-    console.warn(`setup [${username}]: CSRF 토큰 획득 실패 — 테이블 리셋 건너뜀`);
+    console.warn(`setup [${username}]: CSRF 토큰 획득 실패 (HTTP ${csrfRes.status}) — 테이블 리셋 건너뜀`);
   }
 
   // ── 5. 고객용 메뉴 조회 (주문 가능 메뉴 ID 사전 수집)
@@ -392,8 +419,16 @@ export function adminWsListener(data) {
 
   const res = ws.connect(
     wsUrl,
-    // JWT 쿠키를 WebSocket 핸드셰이크 Cookie 헤더에 포함
-    { headers: { Cookie: `access_token=${accessToken}` } },
+    {
+      headers: {
+        // JWT 인증: HttpOnly 쿠키 수동 첨부
+        Cookie: `access_token=${accessToken}`,
+        // ★ AllowedHostsOriginValidator 통과 필수 ★
+        // channels/security/websocket.py: Origin 없으면 → good_origin=False → 403 거부
+        // WS_ORIGIN 은 ALLOWED_HOSTS 에 등록된 도메인이어야 함 (예: https://dorder-api.shop)
+        Origin: WS_ORIGIN,
+      },
+    },
     function (socket) {
 
       socket.on('open', () => {
@@ -452,7 +487,20 @@ export function adminWsListener(data) {
     },
   );
 
-  check(res, { 'admin_ws 101': (r) => r && r.status === 101 });
+  const wsOk = check(res, { 'admin_ws 101': (r) => r && r.status === 101 });
+  if (!wsOk) {
+    // 업그레이드 실패 시 급속 재시도 방지 (서버 부하 방어)
+    // 실패 원인 후보:
+    //   403 → AllowedHostsOriginValidator: WS_ORIGIN 이 ALLOWED_HOSTS 와 불일치
+    //   403 → _authenticate(): access_token 만료 or 쿠키 미전달
+    //   503/502 → Django 미기동
+    const status = res ? res.status : 'null';
+    console.error(
+      `[Admin WS] 업그레이드 실패 booth=${boothUuid.slice(0, 8)}… ` +
+      `status=${status} (WS_ORIGIN=${WS_ORIGIN})`,
+    );
+    sleep(5);  // 5초 후 재시도
+  }
 }
 
 // ──────────────────────────────────────────────
