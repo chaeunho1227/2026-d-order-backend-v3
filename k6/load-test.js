@@ -325,7 +325,45 @@ export function customerFlow(data) {
     check(res, { 'menu_list 200': (r) => r.status === 200 });
   });
 
-  sleep(rand(3, 7));
+  sleep(rand(1, 3));
+
+  // ── Step 2b. 카트 상태 복구 ──────────────────
+  // 이전 테스트 잔류 세션: table_enter 는 IN_USE 테이블의 기존 TableUsage 를 재사용.
+  // 그 세션의 카트가 PENDING/ORDERED 상태이면 payment_info(enter_payment_info) 가
+  // CART_NOT_ACTIVE(409)를 반환해 결제 플로우 전체 실패.
+  //
+  //   pending_payment → POST payment-cancel/ → ACTIVE (기존 아이템 유지)
+  //   ordered         → POST reset/          → ACTIVE (아이템 초기화, round++)
+  //
+  // ★ add_to_cart *이전*에 복구해야 한다.
+  //   ordered → reset 은 아이템을 전부 지우므로, add_to_cart 후에 reset 하면 빈 카트가 됨.
+  group('02b_cart_restore', () => {
+    const stateRes = http.get(
+      `${BASE_URL}/api/v3/django/cart/detail/?table_usage_id=${tableUsageId}`,
+    );
+    if (stateRes.status !== 200) return;
+
+    let cartStatus;
+    try { cartStatus = JSON.parse(stateRes.body).data.cart.status; } catch { return; }
+
+    if (cartStatus === 'pending_payment') {
+      const r = http.post(
+        `${BASE_URL}/api/v3/django/cart/payment-cancel/`,
+        JSON.stringify({ table_usage_id: tableUsageId }),
+        { headers: JSON_HEADERS },
+      );
+      console.log(`[CartRestore] PENDING→ACTIVE HTTP ${r.status} table_usage_id=${tableUsageId}`);
+    } else if (cartStatus === 'ordered') {
+      const r = http.post(
+        `${BASE_URL}/api/v3/django/cart/reset/`,
+        JSON.stringify({ table_usage_id: tableUsageId }),
+        { headers: JSON_HEADERS },
+      );
+      console.log(`[CartRestore] ORDERED→ACTIVE HTTP ${r.status} table_usage_id=${tableUsageId}`);
+    }
+  });
+
+  sleep(rand(2, 5));
 
   // ── Step 3. 장바구니 담기 (1~3개) ───────────
   group('03_add_to_cart', () => {
@@ -441,15 +479,43 @@ export function customerFlow(data) {
 // ──────────────────────────────────────────────
 export function adminWsListener(data) {
   // 어드민 VU → 부스 분산 (손님과 동일한 모듈러 방식)
-  const booth       = data.booths[(__VU - 1) % data.booths.length];
-  const { accessToken, boothUuid } = booth;
+  const boothIdx    = (__VU - 1) % data.booths.length;
+  const booth       = data.booths[boothIdx];
+  const { boothUuid } = booth;
+  const cred        = ADMIN_CREDS[boothIdx];
   const wsUrl       = `${WS_BASE}/ws/django/booth/orders/management/`;
+
+  // ── 매 WS 연결(최초 + 재연결) 시 fresh login ───────────────────────
+  // setup() 에서 얻은 access_token 은 JWT_ACCESS_TOKEN_LIFETIME(15분) 이 지나면 만료.
+  // 워커 재시작(1012)으로 소켓이 끊겨 16분 이후 재연결하면 stale token → 403 폭주.
+  // 매 연결 직전 재로그인해 fresh token 을 사용하면 재연결 시에도 인증 유지.
+  let accessToken = '';
+  const loginRes = http.post(
+    `${BASE_URL}/api/v3/django/auth/`,
+    JSON.stringify({ username: cred.username, password: cred.password }),
+    { headers: JSON_HEADERS },
+  );
+  if (loginRes.status !== 200) {
+    console.error(`[Admin WS] 재로그인 실패 ${cred.username}: HTTP ${loginRes.status}`);
+    sleep(5);
+    return;
+  }
+  if (loginRes.cookies && loginRes.cookies.access_token) {
+    for (const c of loginRes.cookies.access_token) {
+      if (c.value) accessToken = c.value;
+    }
+  }
+  if (!accessToken) {
+    console.error(`[Admin WS] access_token 추출 실패 ${cred.username}`);
+    sleep(5);
+    return;
+  }
 
   const res = ws.connect(
     wsUrl,
     {
       headers: {
-        // JWT 인증: HttpOnly 쿠키 수동 첨부
+        // JWT 인증: HttpOnly 쿠키 수동 첨부 (매 연결마다 fresh token)
         Cookie: `access_token=${accessToken}`,
         // ★ AllowedHostsOriginValidator 통과 필수 ★
         // channels/security/websocket.py: Origin 없으면 → good_origin=False → 403 거부
