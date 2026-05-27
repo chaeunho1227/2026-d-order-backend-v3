@@ -209,7 +209,16 @@ function setupBooth(cred) {
     const resetRes = http.del(
       `${BASE_URL}/api/v3/django/booth/mypage/reset-table-data/`,
       null,
-      { headers: { 'X-CSRFToken': csrfToken }, jar },
+      {
+        headers: {
+          'X-CSRFToken': csrfToken,
+          // Django CSRF: SECURE_PROXY_SSL_HEADER 설정으로 HTTPS 판정 →
+          // Referer 헤더 없으면 무조건 403. BASE_URL/를 Referer로 전달.
+          // request.get_host()='localhost' 와 is_same_domain('localhost','localhost')=True → 통과
+          'Referer': `${BASE_URL}/`,
+        },
+        jar,
+      },
     );
     console.log(`setup [${username}]: 테이블 리셋 — HTTP ${resetRes.status}`);
     if (resetRes.status !== 200) {
@@ -232,9 +241,11 @@ function setupBooth(cred) {
   const setIds = (d.SET || []).filter(s => !s.is_soldout && s.stock > 0).map(s => s.id);
 
   if (menuIds.length === 0) {
-    throw new Error(`setup [${username}]: 주문 가능한 메뉴가 없습니다. 재고를 확인하세요.`);
+    // 메뉴 없으면 경고만 — WS 감시 테스트는 계속 진행 (고객 주문은 이 부스 제외)
+    console.warn(`setup [${username}]: ⚠ 주문 가능 메뉴 없음. Django admin에서 재고 추가 필요. WS 테스트만 진행`);
+  } else {
+    console.log(`setup [${username}]: 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
   }
-  console.log(`setup [${username}]: 메뉴 ${menuIds.length}개, 세트 ${setIds.length}개`);
 
   return { boothUuid, tableMaxCnt, menuIds, setIds, accessToken };
 }
@@ -261,6 +272,12 @@ export function customerFlow(data) {
   // VU → 부스 분산: 모든 부스에 손님이 고르게 들어가도록 모듈러 배정
   const booth      = data.booths[(__VU - 1) % data.booths.length];
   const { boothUuid, tableMaxCnt, menuIds, setIds } = booth;
+
+  // 메뉴 없는 부스는 고객 주문 불가 → idle sleep 후 반환 (WS 감시만 진행)
+  if (!menuIds || menuIds.length === 0) {
+    sleep(rand(10, 20));
+    return;
+  }
 
   // 부스 내 테이블 고정 배정 — 동일 VU는 항상 같은 테이블 → 세션 충돌 방지
   const tableNum = (Math.floor((__VU - 1) / data.booths.length) % tableMaxCnt) + 1;
