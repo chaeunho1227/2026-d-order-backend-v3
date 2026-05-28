@@ -8,6 +8,7 @@ import com.example.spring.security.ServerApiJwtFilter;
 import com.example.spring.service.serving.ServingTaskService;
 import jakarta.servlet.http.HttpServletRequest;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 import java.util.List;
 import java.util.Map;
 
+@Slf4j
 @RestController
 @RequestMapping("/serving")
 @RequiredArgsConstructor
@@ -100,7 +102,7 @@ public class ServingTaskController {
     }
 
     @PostMapping("/catchcall")
-    public ResponseEntity<String> catchCall(
+    public ResponseEntity<?> catchCall(
             @RequestParam Long taskId,
             HttpServletRequest httpRequest
     ) {
@@ -117,12 +119,20 @@ public class ServingTaskController {
 
         String sessionId = (String) httpRequest.getAttribute(ServerApiJwtFilter.ATTR_SESSION_ID);
 
-        servingTaskService.catchCall(taskId, boothId, serverClientId, sessionId);
-        return ResponseEntity.ok("서빙 요청이 수락되었습니다.");
+        try {
+            servingTaskService.catchCall(taskId, boothId, serverClientId, sessionId);
+            return ResponseEntity.ok("서빙 요청이 수락되었습니다.");
+        } catch (IllegalStateException e) {
+            log.warn("[serving catchcall] 상태 충돌 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            log.warn("[serving catchcall] 잘못된 요청 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
     }
 
     @PostMapping("/complete")
-    public ResponseEntity<String> completeCall(
+    public ResponseEntity<?> completeCall(
             @RequestParam Long taskId,
             HttpServletRequest httpRequest
     ) {
@@ -137,12 +147,20 @@ public class ServingTaskController {
             return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
         }
 
-        servingTaskService.completeCall(taskId, boothId, serverClientId);
-        return ResponseEntity.ok("서빙이 완료되었습니다.");
+        try {
+            servingTaskService.completeCall(taskId, boothId, serverClientId);
+            return ResponseEntity.ok("서빙이 완료되었습니다.");
+        } catch (IllegalStateException e) {
+            log.warn("[serving complete] 상태 충돌 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            log.warn("[serving complete] 잘못된 요청 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
     }
 
     @PostMapping("/cancel")
-    public ResponseEntity<String> cancelCall(
+    public ResponseEntity<?> cancelCall(
             @RequestParam Long taskId,
             HttpServletRequest httpRequest
     ) {
@@ -157,8 +175,16 @@ public class ServingTaskController {
             return ResponseEntity.badRequest().body("X-Server-Client-Id header is required.");
         }
 
-        servingTaskService.cancelCall(taskId, boothId, serverClientId);
-        return ResponseEntity.ok("서빙 수락이 취소되었습니다.");
+        try {
+            servingTaskService.cancelCall(taskId, boothId, serverClientId);
+            return ResponseEntity.ok("서빙 수락이 취소되었습니다.");
+        } catch (IllegalStateException e) {
+            log.warn("[serving cancel] 상태 충돌 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.status(HttpStatus.CONFLICT).body(Map.of("message", e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            log.warn("[serving cancel] 잘못된 요청 taskId={}, boothId={}: {}", taskId, boothId, e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of("message", e.getMessage()));
+        }
     }
 
     private String extractServerClientId(HttpServletRequest request) {
