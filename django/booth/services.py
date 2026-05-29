@@ -348,9 +348,14 @@ class BoothStatisticsService:
                 continue
 
             if key not in menu_data:
+                if item.menu_id:
+                    image_url = item.menu.image.url if item.menu.image else None
+                else:
+                    image_url = item.setmenu.image.url if item.setmenu.image else None
                 menu_data[key] = {
                     'menu_id': item.menu_id,
                     'name': name,
+                    'image_url': image_url,
                     'stock': stock,
                     'sold_quantity': 0,
                     'total_revenue': 0,
