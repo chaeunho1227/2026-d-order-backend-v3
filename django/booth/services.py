@@ -190,6 +190,7 @@ class BoothStatisticsService:
 
     @staticmethod
     def get_statistics(booth):
+        from datetime import date as date_cls
         from django.db.models import Sum, Avg, Count
         from django.db.models.functions import TruncDate, ExtractHour
         from django.utils import timezone
@@ -198,16 +199,30 @@ class BoothStatisticsService:
 
         tz = timezone.get_current_timezone()
 
-        booth_orders = Order.objects.filter(
-            table_usage__table__booth=booth
-        ).exclude(order_status='CANCELLED')
+        # 축제 운영 날짜 고정 (5/26~28 외 과거 데이터 제외)
+        FESTIVAL_DATE_STRS = ["2026-05-26", "2026-05-27", "2026-05-28"]
+        festival_dates = [date_cls.fromisoformat(d) for d in FESTIVAL_DATE_STRS]
 
-        booth_items = OrderItem.objects.filter(
-            order__table_usage__table__booth=booth
-        ).exclude(status='CANCELLED').exclude(order__order_status='CANCELLED')
+        base_order_qs = (
+            Order.objects
+            .filter(table_usage__table__booth=booth)
+            .exclude(order_status='CANCELLED')
+            .annotate(order_date=TruncDate('created_at', tzinfo=tz))
+            .filter(order_date__in=festival_dates)
+        )
+
+        # 날짜 집계용 서브쿼리 ID 목록 (annotation 없는 깨끗한 queryset으로 재사용)
+        order_ids = base_order_qs.values('id')
+
+        booth_items = (
+            OrderItem.objects
+            .filter(order_id__in=order_ids)
+            .exclude(status='CANCELLED')
+            .exclude(order__order_status='CANCELLED')
+        )
 
         # 총 주문 건수
-        total_orders = booth_orders.count()
+        total_orders = base_order_qs.count()
 
         # 평균 조리시간 (분)
         cooked = list(
@@ -237,15 +252,18 @@ class BoothStatisticsService:
             round(usage_avg['avg'], 1) if usage_avg['avg'] is not None else None
         )
 
-        daily_revenue_map = {d: 0 for d in booth.location.keys()}
+        # 날짜별 매출 (operate_dates 기준으로 초기화)
+        daily_revenue_map = {d: 0 for d in FESTIVAL_DATE_STRS}
         for row in (
-            booth_orders
+            Order.objects
+            .filter(id__in=order_ids)
             .annotate(order_date=TruncDate('created_at', tzinfo=tz))
             .values('order_date')
             .annotate(revenue=Sum('order_price'))
         ):
             key = row['order_date'].strftime('%Y-%m-%d')
-            daily_revenue_map[key] = row['revenue'] or 0
+            if key in daily_revenue_map:
+                daily_revenue_map[key] = row['revenue'] or 0
         daily_revenue = [
             {'date': k, 'revenue': v} for k, v in daily_revenue_map.items()
         ]
@@ -254,7 +272,8 @@ class BoothStatisticsService:
         HOURS = list(range(17, 24))
         hourly_map = {h: 0 for h in HOURS}
         for row in (
-            booth_orders
+            Order.objects
+            .filter(id__in=order_ids)
             .annotate(hour=ExtractHour('created_at', tzinfo=tz))
             .filter(hour__in=HOURS)
             .values('hour')
@@ -265,9 +284,13 @@ class BoothStatisticsService:
             {'hour': f"{h:02d}:00", 'revenue': hourly_map[h]} for h in HOURS
         ]
 
+        # 총매출 = 17~23시 시간 윈도우 합산 (일별 매출과 동일한 기준)
+        total_revenue = sum(hourly_map.values())
+
         # 피크타임 (주문 건수 기준)
         peak_row = (
-            booth_orders
+            Order.objects
+            .filter(id__in=order_ids)
             .annotate(hour=ExtractHour('created_at', tzinfo=tz))
             .values('hour')
             .annotate(cnt=Count('id'))
@@ -276,7 +299,7 @@ class BoothStatisticsService:
         )
         peak_time = f"{peak_row['hour']:02d}:00" if peak_row else None
 
-        menu_stats = BoothStatisticsService._get_menu_stats(booth)
+        menu_stats = BoothStatisticsService._get_menu_stats(order_ids)
 
         return {
             'booth_stats': {
@@ -285,7 +308,7 @@ class BoothStatisticsService:
                 'avg_serving_minutes': avg_serving_minutes,
                 'avg_table_usage_minutes': avg_table_usage_minutes,
                 'table_count': booth.table_max_cnt,
-                'total_revenue': booth.total_revenues,
+                'total_revenue': total_revenue,
                 'daily_revenue': daily_revenue,
                 'hourly_revenue': hourly_revenue,
                 'peak_time': peak_time,
@@ -294,12 +317,12 @@ class BoothStatisticsService:
         }
 
     @staticmethod
-    def _get_menu_stats(booth):
+    def _get_menu_stats(order_ids):
         from order.models import OrderItem
 
         base_qs = (
             OrderItem.objects.filter(
-                order__table_usage__table__booth=booth,
+                order_id__in=order_ids,
                 parent=None,
             )
             .exclude(status='CANCELLED')
