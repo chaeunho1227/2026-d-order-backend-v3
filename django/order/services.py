@@ -4,6 +4,7 @@ from django.utils import timezone
 from .models import Order, OrderItem
 from table.models import TableUsage
 from cart.models import Cart, CartItem
+from booth.models import Booth
 
 logger = logging.getLogger(__name__)
 
@@ -408,9 +409,12 @@ class OrderService:
                     stock=models.F('stock') + cancel_quantity
                 )
 
-        # 9) Order.order_price 차감
+        # 9) Order.order_price 차감 + Booth.total_revenues 차감
         order.order_price -= refund_amount
         order.save(update_fields=["order_price", "updated_at"])
+        Booth.objects.filter(pk=booth_id).update(
+            total_revenues=models.F("total_revenues") - refund_amount
+        )
 
         # 9-1) 모든 아이템이 CANCELLED면 Order도 CANCELLED
         # 테이블 이용료(FEE)는 주문의 일부로 취급하여, FEE 항목이 남아있으면
