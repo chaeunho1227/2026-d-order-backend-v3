@@ -111,7 +111,7 @@ class BoothNameAPIView(APIView):
 
 
 class BoothStatisticsAPIView(APIView):
-    """부스 통계 조회 API"""
+    """부스 통계 조회 API (본인 부스)"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
@@ -120,6 +120,52 @@ class BoothStatisticsAPIView(APIView):
         return Response({
             "message": "통계 데이터를 불러왔습니다.",
             "data": data,
+        }, status=status.HTTP_200_OK)
+
+
+class BoothStatisticsAllAPIView(APIView):
+    """전체 부스 통계 조회 API (인증 불필요)"""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request):
+        booths = Booth.objects.all().order_by('pk')
+        result = []
+        for booth in booths:
+            stats = BoothStatisticsService.get_statistics(booth)
+            result.append({
+                "booth_id": booth.pk,
+                "booth_uuid": str(booth.public_id),
+                "booth_name": booth.name,
+                **stats,
+            })
+        return Response({
+            "message": "전체 부스 통계 데이터를 불러왔습니다.",
+            "data": result,
+        }, status=status.HTTP_200_OK)
+
+
+class BoothStatisticsPublicAPIView(APIView):
+    """부스별 통계 조회 API (UUID, 인증 불필요)"""
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    def get(self, request, booth_uuid):
+        try:
+            booth = Booth.objects.get(public_id=booth_uuid)
+        except Booth.DoesNotExist:
+            return Response(
+                {"message": "해당 부스를 찾을 수 없습니다."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        data = BoothStatisticsService.get_statistics(booth)
+        return Response({
+            "message": "통계 데이터를 불러왔습니다.",
+            "data": {
+                "booth_id": booth.pk,
+                "booth_name": booth.name,
+                **data,
+            },
         }, status=status.HTTP_200_OK)
 
 
