@@ -116,7 +116,7 @@ class BoothStatisticsAPIView(APIView):
 
     def get(self, request):
         booth = request.user.booth
-        data = BoothStatisticsService.get_statistics(booth)
+        data = BoothStatisticsService.get_statistics(booth, request=request)
         return Response({
             "message": "통계 데이터를 불러왔습니다.",
             "data": data,
@@ -132,7 +132,7 @@ class BoothStatisticsAllAPIView(APIView):
         booths = Booth.objects.all().order_by('pk')
         result = []
         for booth in booths:
-            stats = BoothStatisticsService.get_statistics(booth)
+            stats = BoothStatisticsService.get_statistics(booth, request=request)
             result.append({
                 "booth_id": booth.pk,
                 "booth_uuid": str(booth.public_id),
@@ -158,7 +158,7 @@ class BoothStatisticsPublicAPIView(APIView):
                 {"message": "해당 부스를 찾을 수 없습니다."},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        data = BoothStatisticsService.get_statistics(booth)
+        data = BoothStatisticsService.get_statistics(booth, request=request)
         return Response({
             "message": "통계 데이터를 불러왔습니다.",
             "data": {

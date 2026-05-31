@@ -189,7 +189,7 @@ class BoothService:
 class BoothStatisticsService:
 
     @staticmethod
-    def get_statistics(booth):
+    def get_statistics(booth, request=None):
         from datetime import date as date_cls
         from django.db.models import Sum, Avg, Count
         from django.db.models.functions import TruncDate, ExtractHour
@@ -299,7 +299,7 @@ class BoothStatisticsService:
         )
         peak_time = f"{peak_row['hour']:02d}:00" if peak_row else None
 
-        menu_stats = BoothStatisticsService._get_menu_stats(order_ids)
+        menu_stats = BoothStatisticsService._get_menu_stats(order_ids, request=request)
 
         return {
             'booth_stats': {
@@ -317,8 +317,16 @@ class BoothStatisticsService:
         }
 
     @staticmethod
-    def _get_menu_stats(order_ids):
+    def _get_menu_stats(order_ids, request=None):
         from order.models import OrderItem
+
+        def _abs_url(image_field):
+            if not image_field:
+                return None
+            url = image_field.url
+            if request is not None and url.startswith('/'):
+                return request.build_absolute_uri(url)
+            return url
 
         base_qs = (
             OrderItem.objects.filter(
@@ -349,9 +357,9 @@ class BoothStatisticsService:
 
             if key not in menu_data:
                 if item.menu_id:
-                    image_url = item.menu.image.url if item.menu.image else None
+                    image_url = _abs_url(item.menu.image)
                 else:
-                    image_url = item.setmenu.image.url if item.setmenu.image else None
+                    image_url = _abs_url(item.setmenu.image)
                 menu_data[key] = {
                     'menu_id': item.menu_id,
                     'name': name,
